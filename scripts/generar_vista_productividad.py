@@ -191,10 +191,57 @@ def _normalizar_na_texto(serie: pd.Series) -> pd.Series:
     return out
 
 
+def calcular_deberia_llevar_por_fecha_asesor(df_base: pd.DataFrame) -> pd.DataFrame:
+    """Replica la logica de la app: 25 cuentas/hora productiva menos cruce de almuerzo (12-13)."""
+    required_cols = {"Fecha", "Asesor", "Hora"}
+    if not required_cols.issubset(set(df_base.columns)):
+        return pd.DataFrame(columns=["Fecha", "Asesor", "deberia_llevar"])
+
+    base = df_base[["Fecha", "Asesor", "Hora"]].copy()
+    base["Fecha"] = pd.to_datetime(base["Fecha"], errors="coerce").dt.normalize()
+    base["Hora_td"] = pd.to_timedelta(base["Hora"].astype("string"), errors="coerce")
+    base = base.dropna(subset=["Fecha", "Asesor", "Hora_td"])
+    if base.empty:
+        return pd.DataFrame(columns=["Fecha", "Asesor", "deberia_llevar"])
+
+    primera = (
+        base.groupby(["Fecha", "Asesor"], dropna=False)["Hora_td"]
+        .min()
+        .reset_index(name="primera_hora")
+    )
+
+    corte_por_fecha = base.groupby("Fecha", dropna=False)["Hora_td"].max()
+    hoy = pd.Timestamp.now().normalize()
+    ahora = pd.Timestamp.now()
+    corte_hoy = pd.to_timedelta(f"{ahora.hour:02d}:{ahora.minute:02d}:{ahora.second:02d}")
+    if hoy in corte_por_fecha.index:
+        corte_por_fecha.loc[hoy] = corte_hoy
+
+    primera["hora_corte"] = primera["Fecha"].map(corte_por_fecha)
+    primera["total_transcurrido"] = (primera["hora_corte"] - primera["primera_hora"]).clip(lower=pd.Timedelta(0))
+
+    inicio_almuerzo = pd.to_timedelta("12:00:00")
+    fin_almuerzo = pd.to_timedelta("13:00:00")
+
+    primera["fin_cruce"] = primera["hora_corte"].where(primera["hora_corte"] < fin_almuerzo, fin_almuerzo)
+    primera["inicio_cruce"] = primera["primera_hora"].where(primera["primera_hora"] > inicio_almuerzo, inicio_almuerzo)
+    primera["cruce_almuerzo"] = (primera["fin_cruce"] - primera["inicio_cruce"]).clip(lower=pd.Timedelta(0))
+    primera.loc[primera["hora_corte"] <= inicio_almuerzo, "cruce_almuerzo"] = pd.Timedelta(0)
+
+    horas_productivas = (primera["total_transcurrido"] - primera["cruce_almuerzo"]).clip(lower=pd.Timedelta(0))
+    deberia = (horas_productivas.dt.total_seconds() / 3600.0) * 25.0
+    deberia = deberia.clip(lower=0)
+    primera["deberia_llevar"] = ((deberia / 5.0).round() * 5.0).fillna(0.0)
+
+    return primera[["Fecha", "Asesor", "deberia_llevar"]]
+
+
 def construir_vista_minima(df_base: pd.DataFrame) -> pd.DataFrame:
     df = df_base.copy()
     if "Fecha" not in df.columns:
         raise ValueError("No existe columna Fecha en los datos procesados")
+
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce").dt.normalize()
 
     col_asesor = "Nombre_Asesor" if "Nombre_Asesor" in df.columns else "asesor_gestion" if "asesor_gestion" in df.columns else None
     if col_asesor is None:
@@ -318,7 +365,9 @@ def construir_vista_minima(df_base: pd.DataFrame) -> pd.DataFrame:
         .fillna(0)
     )
 
-    resumen["deberia_llevar"] = 0
+    deberia_df = calcular_deberia_llevar_por_fecha_asesor(df[["Fecha", "Asesor", "Hora"]])
+    resumen = resumen.merge(deberia_df, on=group_cols, how="left")
+    resumen["deberia_llevar"] = pd.to_numeric(resumen["deberia_llevar"], errors="coerce").fillna(0)
     resumen["Campo"] = "Todos"
     resumen["Marca"] = "Todas"
 
