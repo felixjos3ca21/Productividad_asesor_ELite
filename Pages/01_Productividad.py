@@ -647,6 +647,7 @@ def _normalizar_columnas_vista(df_base: pd.DataFrame) -> pd.DataFrame:
 	_renombrar(["campo"], "Campo")
 	_renombrar(["marca"], "Marca")
 	_renombrar(["cuentas_gestionadas", "cuentas gestionadas"], "cuentas_gestionadas")
+	_renombrar(["gest_cuentas", "gest cuentas", "cuentas_unicas", "cuentas unicas"], "Gest_cuentas")
 	_renombrar(["deberia_llevar", "deberia llevar"], "deberia_llevar")
 	_renombrar(["clientes_gestionados", "clientes gestionados"], "clientes_Gestionados")
 	_renombrar(["contacto_directo", "contacto directo"], "contacto_directo")
@@ -663,6 +664,7 @@ def _normalizar_columnas_vista(df_base: pd.DataFrame) -> pd.DataFrame:
 
 	for c in [
 		"cuentas_gestionadas",
+		"Gest_cuentas",
 		"deberia_llevar",
 		"clientes_Gestionados",
 		"contacto_directo",
@@ -674,6 +676,11 @@ def _normalizar_columnas_vista(df_base: pd.DataFrame) -> pd.DataFrame:
 		if c not in df.columns:
 			df[c] = 0
 		df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+	if "Gest_cuentas" in df.columns:
+		df["Gest_cuentas"] = df["Gest_cuentas"].where(df["Gest_cuentas"] > 0, df["cuentas_gestionadas"])
+	else:
+		df["Gest_cuentas"] = df["cuentas_gestionadas"]
 
 	df["%_contactabilidad"] = (
 		df["contacto_directo"].div(df["cuentas_gestionadas"].replace(0, pd.NA)).fillna(0) * 100
@@ -726,6 +733,7 @@ def construir_resumen_desde_vista(base_vista: pd.DataFrame) -> pd.DataFrame:
 	col_asesor = "Asesor"
 	aggs = {
 		"cuentas_gestionadas": "sum",
+		"Gest_cuentas": "sum",
 		"deberia_llevar": "sum",
 		"clientes_Gestionados": "sum",
 		"contacto_directo": "sum",
@@ -738,6 +746,7 @@ def construir_resumen_desde_vista(base_vista: pd.DataFrame) -> pd.DataFrame:
 	resumen = base_vista.groupby(col_asesor, dropna=False, as_index=False).agg(aggs)
 	for c in [
 		"cuentas_gestionadas",
+		"Gest_cuentas",
 		"clientes_Gestionados",
 		"contacto_directo",
 		"contacto_indirecto",
@@ -749,7 +758,7 @@ def construir_resumen_desde_vista(base_vista: pd.DataFrame) -> pd.DataFrame:
 	resumen["deberia_llevar"] = pd.to_numeric(resumen["deberia_llevar"], errors="coerce").fillna(0)
 	resumen["valor_promesa"] = pd.to_numeric(resumen["valor_promesa"], errors="coerce").fillna(0)
 	resumen["%_contactabilidad"] = (
-		resumen["contacto_directo"].div(resumen["cuentas_gestionadas"].replace(0, pd.NA)).fillna(0) * 100
+		resumen["contacto_directo"].div(resumen["Gest_cuentas"].replace(0, pd.NA)).fillna(0) * 100
 	).round(2)
 	resumen["%_Conversion"] = (
 		resumen["Promesas"].div(resumen["contacto_directo"].replace(0, pd.NA)).fillna(0) * 100
