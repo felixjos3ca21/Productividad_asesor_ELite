@@ -5,6 +5,10 @@ venv/
 # CSV files (any folder)
 *.csv
 **/*.csv
+*.ipynb
+**/*.ipynb
+*.json
+**/*.json
 
 # Python cache/artifacts
 __pycache__/
