@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -8,6 +9,95 @@ import streamlit as st
 st.set_page_config(page_title="Elite Abogados BPO - Productividad", layout="wide")
 st.title("Productividad Asesores")
 st.caption("Lectura de carpeta, transformaciones y matriz dinamica por filtros")
+
+st.markdown(
+	"""
+	<style>
+	/* ─── KPI Cards ─────────────────────────────────────────── */
+	.kpi-row {
+		display: flex;
+		gap: 10px;
+		margin-bottom: 10px;
+		flex-wrap: wrap;
+	}
+	.kpi-card {
+		flex: 1;
+		min-width: 150px;
+		background: #1c2333;
+		border-radius: 10px;
+		padding: 14px 16px;
+		border-top: 3px solid var(--accent, #4e9af1);
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+	}
+	.kpi-icon  { font-size: 1.15rem; margin-bottom: 2px; }
+	.kpi-label {
+		font-size: 1rem;
+		color: #7a8199;
+		line-height: 2;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+	.kpi-value {
+		font-size: 1.5rem;
+		font-weight: 700;
+		color: #e6eaf5;
+		line-height: 1.0;
+		margin-top: 3px;
+	}
+
+	/* ─── Matriz de Productividad ────────────────────────────── */
+	.mat-wrap {
+		overflow-x: auto;
+		border-radius: 10px;
+		border: 1px solid #2a3050;
+		margin-top: 8px;
+	}
+	.mat-tbl {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.75rem;
+		font-family: 'Segoe UI', 'Inter', sans-serif;
+		white-space: nowrap;
+	}
+	.mat-tbl thead tr {
+		background: #141928;
+		color: #7d879e;
+		font-size: 0.63rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+	.mat-tbl thead th {
+		padding: 9px 12px;
+		text-align: center;
+		border-bottom: 2px solid #252e48;
+		white-space: pre-line;
+		line-height: 1.3;
+	}
+	.mat-tbl thead th:first-child { text-align: left; padding-left: 16px; }
+	.mat-tbl tbody tr:nth-child(odd)  { background: #19203a; }
+	.mat-tbl tbody tr:nth-child(even) { background: #1e2640; }
+	.mat-tbl tbody tr:hover           { background: #273155; transition: background 0.12s; }
+	.mat-tbl tbody td {
+		padding: 5px 12px;
+		color: #c5cde5;
+		text-align: center;
+		border-bottom: 1px solid #242d47;
+	}
+	.mat-tbl tbody td:first-child {
+		text-align: left;
+		padding-left: 16px;
+		font-weight: 600;
+		color: #dde3f5;
+		max-width: 220px;
+		white-space: normal;
+	}
+	</style>
+	""",
+	unsafe_allow_html=True,
+)
 
 
 def leer_csv_robusto(path_csv: Path) -> pd.DataFrame:
@@ -99,6 +189,15 @@ def primera_columna(df_base: pd.DataFrame, candidatas: list[str]):
 	for c in candidatas:
 		if c in df_base.columns:
 			return c
+	return None
+
+
+def buscar_columna_case_insensitive(df_base: pd.DataFrame, candidatas: list[str]):
+	mapa = {str(c).strip().lower(): c for c in df_base.columns}
+	for c in candidatas:
+		col = mapa.get(str(c).strip().lower())
+		if col is not None:
+			return col
 	return None
 
 
@@ -287,7 +386,9 @@ def construir_resumen_por_asesor(base_dia: pd.DataFrame, col_asesor: str) -> pd.
 	)
 
 	resumen_gest_cuentas = base.groupby(col_asesor, dropna=False)["Cuenta"].nunique(dropna=True).reset_index(name="Gest_cuentas")
-	resumen_gestiones = base.groupby(col_asesor, dropna=False)["llave_gestion_unica"].nunique().reset_index(name="gestiones_unicas")
+	resumen_gestiones = (
+		base.groupby(col_asesor, dropna=False)["llave_gestion_unica"].nunique().reset_index(name="cuentas_gestionadas")
+	)
 	resumen_clientes = (
 		base.groupby(col_asesor, dropna=False)["Identificacion"].nunique(dropna=True).reset_index(name="clientes_Gestionados")
 	)
@@ -383,7 +484,7 @@ def construir_resumen_por_asesor(base_dia: pd.DataFrame, col_asesor: str) -> pd.
 	)
 
 	columnas_enteras = [
-		"gestiones_unicas",
+		"cuentas_gestionadas",
 		"Gest_cuentas",
 		"clientes_Gestionados",
 		"contacto_directo",
@@ -399,7 +500,7 @@ def construir_resumen_por_asesor(base_dia: pd.DataFrame, col_asesor: str) -> pd.
 	resumen["%_contactabilidad"] = (resumen["contacto_directo"].div(resumen["Gest_cuentas"].replace(0, pd.NA)).fillna(0) * 100).round(2)
 	resumen["%_Conversion"] = (resumen["Promesas"].div(resumen["contacto_directo"].replace(0, pd.NA)).fillna(0) * 100).round(2)
 
-	return resumen.sort_values(["gestiones_unicas", "clientes_Gestionados"], ascending=False).reset_index(drop=True)
+	return resumen.sort_values("valor_promesa", ascending=False).reset_index(drop=True)
 
 
 def calcular_deberia_llevar(base_dia: pd.DataFrame, resumen_diario: pd.DataFrame, col_asesor: str, fecha_sel) -> pd.DataFrame:
@@ -493,6 +594,39 @@ def formato_moneda(v: float) -> str:
 	return f"$ {v:,.0f}".replace(",", ".")
 
 
+def _kpi_card(label: str, value: str, icon: str, color: str) -> str:
+	return (
+		f'<div class="kpi-card" style="--accent:{color}">'
+		f'<span class="kpi-icon">{icon}</span>'
+		f'<span class="kpi-label">{label}</span>'
+		f'<span class="kpi-value">{value}</span>'
+		f'</div>'
+	)
+
+
+def _render_kpi_row(cards: list) -> str:
+	items = "".join(_kpi_card(**c) for c in cards)
+	return f'<div class="kpi-row">{items}</div>'
+
+
+def _render_matriz_html(df: pd.DataFrame) -> str:
+	def _e(s: str) -> str:
+		return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+	encabezados = "".join(f"<th>{_e(c)}</th>" for c in df.columns)
+	filas = []
+	for _, row in df.iterrows():
+		celdas = "".join(f"<td>{_e(v)}</td>" for v in row.values)
+		filas.append(f"<tr>{celdas}</tr>")
+	cuerpo = "".join(filas)
+	return (
+		'<div class="mat-wrap">'
+		f'<table class="mat-tbl"><thead><tr>{encabezados}</tr></thead>'
+		f'<tbody>{cuerpo}</tbody></table>'
+		'</div>'
+	)
+
+
 st.sidebar.title("Filtros")
 
 # Configuracion fija de origen (sin controles en sidebar)
@@ -530,11 +664,17 @@ col_asesor = "Nombre_Asesor" if "Nombre_Asesor" in df_proc.columns else "asesor_
 asesores_disponibles = sorted(df_proc[col_asesor].dropna().astype(str).unique().tolist())
 asesores_sel = st.sidebar.multiselect("Asesor", options=asesores_disponibles)
 
+col_marca = buscar_columna_case_insensitive(df_proc, ["Marca"])
+marcas_disponibles = sorted(df_proc[col_marca].dropna().astype(str).unique().tolist()) if col_marca else []
+marcas_sel = st.sidebar.multiselect("Marca", options=marcas_disponibles)
+
 base = df_proc[df_proc["Fecha"] == pd.to_datetime(fecha_sel).normalize()].copy()
 if campos_sel and "Campo" in base.columns:
 	base = base[base["Campo"].isin(campos_sel)]
 if asesores_sel:
 	base = base[base[col_asesor].isin(asesores_sel)]
+if marcas_sel and col_marca in base.columns:
+	base = base[base[col_marca].isin(marcas_sel)]
 
 base, filas_duplicadas_removidas = deduplicar_por_llave_negocio(base, col_asesor)
 
@@ -546,7 +686,7 @@ resumen_diario = construir_resumen_por_asesor(base, col_asesor)
 resumen_diario = calcular_deberia_llevar(base, resumen_diario, col_asesor, fecha_sel)
 
 # Medidas para tarjetas KPI (dinamicas segun filtros)
-total_gestiones = int(resumen_diario["gestiones_unicas"].sum())
+total_cuentas_gestionadas = int(resumen_diario["cuentas_gestionadas"].sum())
 
 if "Identificacion" in base.columns:
 	ids_limpios = base["Identificacion"].astype("string").str.strip()
@@ -556,25 +696,33 @@ else:
 	total_clientes_gestionados = int(resumen_diario["clientes_Gestionados"].sum())
 
 asesores_en_vista = max(int(resumen_diario[col_asesor].nunique(dropna=True)), 1)
-promedio_gestiones_x_asesor = total_gestiones / asesores_en_vista
+promedio_cuentas_gestionadas_x_asesor = total_cuentas_gestionadas / asesores_en_vista
+promedio_cuentas_gestionadas_x_asesor_kpi = int(math.ceil(promedio_cuentas_gestionadas_x_asesor))
 promedio_cuentas_unicas_x_asesor = float(resumen_diario["Gest_cuentas"].mean()) if not resumen_diario.empty else 0.0
-
-col_kpi_1, col_kpi_2, col_kpi_3, col_kpi_4 = st.columns(4)
-col_kpi_1.metric("Total gestiones", f"{total_gestiones:,}".replace(",", "."))
-col_kpi_2.metric("Total clientes gestionados", f"{total_clientes_gestionados:,}".replace(",", "."))
-col_kpi_3.metric("Promedio gestiones x asesor", f"{promedio_gestiones_x_asesor:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-col_kpi_4.metric("Promedio cuentas unicas x asesor", f"{promedio_cuentas_unicas_x_asesor:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+promedio_cuentas_unicas_x_asesor_kpi = int(math.ceil(promedio_cuentas_unicas_x_asesor))
 
 cantidad_promesas = int(resumen_diario["Promesas"].sum()) if "Promesas" in resumen_diario.columns else 0
 total_valor_promesas = float(resumen_diario["valor_promesa"].sum()) if "valor_promesa" in resumen_diario.columns else 0.0
 promedio_promesas = float(resumen_diario["Promesas"].mean()) if "Promesas" in resumen_diario.columns and not resumen_diario.empty else 0.0
+promedio_promesas_kpi = int(math.ceil(promedio_promesas))
 
-col_kpi_5, col_kpi_6, col_kpi_7 = st.columns(3)
-col_kpi_5.metric("Cantidad promesas", f"{cantidad_promesas:,}".replace(",", "."))
-col_kpi_6.metric("Total valor promesas", formato_moneda(total_valor_promesas))
-col_kpi_7.metric("Promedio promesas", f"{promedio_promesas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+st.markdown(_render_kpi_row([
+	{"label": "Total cuentas gestionadas",       "value": f"{total_cuentas_gestionadas:,}".replace(",", "."),             "icon": "📋", "color": "#4e9af1"},
+	{"label": "Total clientes gestionados",       "value": f"{total_clientes_gestionados:,}".replace(",", "."),           "icon": "👥", "color": "#4ecdc4"},
+	{"label": "Promedio cuentas x asesor",        "value": f"{promedio_cuentas_gestionadas_x_asesor_kpi:,}".replace(",", "."), "icon": "📊", "color": "#a78bfa"},
+	{"label": "Promedio cuentas unicas x asesor", "value": f"{promedio_cuentas_unicas_x_asesor_kpi:,}".replace(",", "."),  "icon": "🔢", "color": "#818cf8"},
+]), unsafe_allow_html=True)
 
-st.subheader("Matriz de Productividad")
+st.markdown(_render_kpi_row([
+	{"label": "Cantidad promesas",       "value": f"{cantidad_promesas:,}".replace(",", "."), "icon": "🤝", "color": "#34d399"},
+	{"label": "Total valor promesas",    "value": formato_moneda(total_valor_promesas),       "icon": "💰", "color": "#fbbf24"},
+	{"label": "Promedio promesas x asesor", "value": f"{promedio_promesas_kpi:,}".replace(",", "."), "icon": "📈", "color": "#fb923c"},
+]), unsafe_allow_html=True)
+
+_ahora = pd.Timestamp.now()
+_min_redondeado = ((_ahora.minute) // 10) * 10
+_hora_actualiz = _ahora.replace(minute=_min_redondeado, second=0, microsecond=0).strftime("%H:%M")
+st.subheader(f"Matriz de Productividad   ·   Actualizado: {_hora_actualiz}")
 
 matriz_ui = resumen_diario.copy()
 
@@ -586,8 +734,8 @@ def icono_semaforo_gestion(v: int, promedio: float) -> str:
 		return "🟡"
 	return "🟢"
 
-matriz_ui["gestiones_unicas"] = matriz_ui["gestiones_unicas"].map(
-	lambda v: f"{icono_semaforo_gestion(int(v), promedio_gestiones_x_asesor)} {int(v):,}".replace(",", ".")
+matriz_ui["cuentas_gestionadas"] = matriz_ui["cuentas_gestionadas"].map(
+	lambda v: f"{icono_semaforo_gestion(int(v), promedio_cuentas_gestionadas_x_asesor)} {int(v):,}".replace(",", ".")
 )
 
 min_valor, max_valor = resumen_diario["valor_promesa"].min(), resumen_diario["valor_promesa"].max()
@@ -610,9 +758,8 @@ matriz_ui["deberia_llevar"] = matriz_ui["deberia_llevar"].map(
 
 columnas_vista = [
 	col_asesor,
-	"gestiones_unicas",
+	"cuentas_gestionadas",
 	"deberia_llevar",
-	"Gest_cuentas",
 	"clientes_Gestionados",
 	"contacto_directo",
 	"contacto_indirecto",
@@ -626,8 +773,7 @@ columnas_vista = [
 matriz_mostrar = matriz_ui[columnas_vista].rename(
 	columns={
 		col_asesor: "Asesor",
-		"gestiones_unicas": "Gestiones",
-		"Gest_cuentas": "Cuentas\nunicas",
+		"cuentas_gestionadas": "Cuentas\ngestionadas",
 		"clientes_Gestionados": "Clientes\ngestionados",
 		"contacto_directo": "Contacto\ndirecto",
 		"contacto_indirecto": "Contacto\nindirecto",
@@ -640,31 +786,9 @@ matriz_mostrar = matriz_ui[columnas_vista].rename(
 	}
 )
 
-ajustar_ancho = st.toggle("Ajustar al ancho de la pagina", value=False)
 
-alto_tabla = 560
-alto_tabla = min(1400, max(560, 35 * (len(matriz_mostrar) + 1)))
 
-st.dataframe(
-	matriz_mostrar,
-	use_container_width=ajustar_ancho,
-	height=alto_tabla,
-	hide_index=True,
-	column_config={
-		"Asesor": st.column_config.TextColumn("Asesor"),
-		"Gestiones": st.column_config.TextColumn("Gestiones"),
-		"Cuentas\nunicas": st.column_config.NumberColumn("Cuentas\nunicas"),
-		"Clientes\ngestionados": st.column_config.NumberColumn("Clientes\ngestionados"),
-		"Contacto\ndirecto": st.column_config.NumberColumn("Contacto\ndirecto"),
-		"Contacto\nindirecto": st.column_config.NumberColumn("Contacto\nindirecto"),
-		"No\ncontacto": st.column_config.NumberColumn("No\ncontacto"),
-		"Promesas": st.column_config.NumberColumn("Promesas"),
-		"Deberia\nllevar": st.column_config.TextColumn("Deberia\nllevar"),
-		"Valor\npromesa": st.column_config.TextColumn("Valor\npromesa"),
-		"%\nContactabilidad": st.column_config.TextColumn("%\nContactabilidad"),
-		"%\nConversion": st.column_config.TextColumn("%\nConversion"),
-	},
-)
+st.markdown(_render_matriz_html(matriz_mostrar), unsafe_allow_html=True)
 
 csv_export = resumen_diario.to_csv(index=False).encode("utf-8")
 st.download_button(
