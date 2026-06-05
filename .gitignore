@@ -9,6 +9,7 @@ venv/
 **/*.ipynb
 *.json
 **/*.json
+!productividad_view.json
 
 # Python cache/artifacts
 __pycache__/

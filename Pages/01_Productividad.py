@@ -729,6 +729,26 @@ def cargar_vista_productividad_desde_secrets() -> pd.DataFrame:
 	return _normalizar_columnas_vista(df)
 
 
+@st.cache_data(show_spinner=False)
+def cargar_vista_productividad_desde_archivo(path_texto: str = "productividad_view.json") -> pd.DataFrame:
+	path = Path(path_texto)
+	if not path.exists() or not path.is_file():
+		return pd.DataFrame()
+
+	try:
+		raw = json.loads(path.read_text(encoding="utf-8"))
+		if isinstance(raw, list):
+			df = pd.DataFrame(raw)
+		elif isinstance(raw, dict):
+			df = pd.DataFrame(raw.get("rows", []))
+		else:
+			return pd.DataFrame()
+	except Exception:
+		return pd.DataFrame()
+
+	return _normalizar_columnas_vista(df)
+
+
 def construir_resumen_desde_vista(base_vista: pd.DataFrame) -> pd.DataFrame:
 	col_asesor = "Asesor"
 	aggs = {
@@ -771,9 +791,20 @@ st.sidebar.title("Filtros")
 
 df_omitidos = pd.DataFrame(columns=["archivo", "error"])
 df_vista = cargar_vista_productividad_desde_secrets()
+fuente_vista = ""
 
 if not df_vista.empty:
-	st.caption("Fuente activa: vista minima desde st.secrets (sin archivos locales)")
+	fuente_vista = "secrets"
+else:
+	df_vista = cargar_vista_productividad_desde_archivo("productividad_view.json")
+	if not df_vista.empty:
+		fuente_vista = "archivo"
+
+if not df_vista.empty:
+	if fuente_vista == "secrets":
+		st.caption("Fuente activa: vista minima desde st.secrets (sin archivos locales)")
+	else:
+		st.caption("Fuente activa: productividad_view.json versionado en el repositorio")
 	df_proc = df_vista.copy()
 	col_asesor = "Asesor"
 	col_marca = "Marca" if "Marca" in df_proc.columns else None
