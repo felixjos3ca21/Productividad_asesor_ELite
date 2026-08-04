@@ -1,7 +1,7 @@
 param(
-    [string]$InputFolder = "C:\Users\felix.contreras\Desktop\Gestiones",
+    [string]$InputFolder = "C:\Users\elite\OneDrive\Desktop\Gestiones",
     [string]$Catalog = "asesores_catalogo.json",
-    [string]$Output = "productividad_view.json"
+    [string]$Output = "productividad_resumen.csv"
 )
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -20,7 +20,7 @@ try {
         exit $LASTEXITCODE
     }
 
-    Write-Host "JSON actualizado: $Output"
+    Write-Host "Resumen actualizado: $Output"
 }
 finally {
     Pop-Location

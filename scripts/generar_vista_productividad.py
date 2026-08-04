@@ -32,7 +32,7 @@ def leer_carpeta_tabular(carpeta: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not carpeta.exists() or not carpeta.is_dir():
         return pd.DataFrame(), pd.DataFrame(columns=["archivo", "error"])
 
-    extensiones = {".csv", ".xlsx", ".xls", ".json", ".parquet"}
+    extensiones = {".csv", ".xlsx", ".xls", ".parquet"}
     archivos = sorted([p for p in carpeta.rglob("*") if p.is_file() and p.suffix.lower() in extensiones])
 
     dfs = []
@@ -45,8 +45,6 @@ def leer_carpeta_tabular(carpeta: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
                 tmp = leer_csv_robusto(archivo)
             elif sufijo in {".xlsx", ".xls"}:
                 tmp = pd.read_excel(archivo)
-            elif sufijo == ".json":
-                tmp = pd.read_json(archivo)
             elif sufijo == ".parquet":
                 tmp = pd.read_parquet(archivo)
             else:
@@ -407,10 +405,10 @@ def construir_vista_minima(df_base: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Genera productividad_view.json anonimizado para despliegue web")
+    parser = argparse.ArgumentParser(description="Genera un resumen de productividad local sin usar JSON para salida")
     parser.add_argument("--input-folder", required=True, help="Carpeta local con archivos fuente")
     parser.add_argument("--catalog", default="asesores_catalogo.json", help="Ruta al catalogo de asesores")
-    parser.add_argument("--output", default="productividad_view.json", help="Archivo JSON de salida")
+    parser.add_argument("--output", default="productividad_resumen.csv", help="Archivo de salida (.csv o .parquet)")
     args = parser.parse_args()
 
     carpeta = Path(args.input_folder)
@@ -433,9 +431,13 @@ def main() -> int:
     vista = construir_vista_minima(df)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(vista.to_json(orient="records", force_ascii=False, indent=2), encoding="utf-8")
+    suffix = output_path.suffix.lower()
+    if suffix == ".parquet":
+        vista.to_parquet(output_path, index=False)
+    else:
+        vista.to_csv(output_path, index=False, encoding="utf-8-sig")
 
-    print(f"Vista generada: {output_path} ({len(vista)} filas)")
+    print(f"Resumen generado: {output_path} ({len(vista)} filas)")
     if not df_omitidos.empty:
         print(f"Archivos omitidos: {len(df_omitidos)}")
 

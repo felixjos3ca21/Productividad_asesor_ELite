@@ -1,14 +1,37 @@
 import json
 import math
+import sqlite3
+import sys
 from pathlib import Path
-
 import pandas as pd
 import streamlit as st
+from scripts.actualizar_archivo import render_actualizar_archivo_sidebar
+from scripts.importar_gestiones import DEFAULT_CARPETAS, ejecutar_etl	
 
 
-st.set_page_config(page_title="Elite Abogados BPO - Productividad", layout="wide")
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DB_PATH = str(_REPO_ROOT / "gestiones.db")
+
+
+render_actualizar_archivo_sidebar(_DB_PATH)
+
+if str(_REPO_ROOT) not in sys.path:
+	sys.path.insert(0, str(_REPO_ROOT))
+
+
+_ICON = Path(__file__).parent / "scripts" / "image" / "icono.ico"
+st.set_page_config(page_title="Elite Abogados BPO - Productividad", layout="wide", page_icon=str(_ICON))
+
+col1, col2, col3, col4, col5, col6=st.columns(6)
+with col1:
+	st.image("scripts/image/images.jpg", width=300)
+with col6:
+	st.image("scripts/image/logo_claro.png", width=200)
+	
+	
+
 st.title("Productividad Asesores")
-st.caption("Lectura de carpeta, transformaciones y matriz dinamica por filtros")
+
 
 st.markdown(
 	"""
@@ -63,17 +86,18 @@ st.markdown(
 		white-space: nowrap;
 	}
 	.mat-tbl thead tr {
-		background: #141928;
-		color: #7d879e;
-		font-size: 0.63rem;
+		background: #121827;
+		color: #f8fafc;
+		font-size: 0.78rem;
 		text-transform: uppercase;
-		letter-spacing: 0.06em;
+		letter-spacing: 0.05em;
 	}
 	.mat-tbl thead th {
-		padding: 9px 12px;
+		padding: 11px 14px;
 		text-align: center;
-		border-bottom: 2px solid #252e48;
+		border-bottom: 2px solid #334155;
 		white-space: pre-line;
+		font-weight: 800;
 		line-height: 1.3;
 	}
 	.mat-tbl thead th:first-child { text-align: left; padding-left: 16px; }
@@ -81,16 +105,19 @@ st.markdown(
 	.mat-tbl tbody tr:nth-child(even) { background: #1e2640; }
 	.mat-tbl tbody tr:hover           { background: #273155; transition: background 0.12s; }
 	.mat-tbl tbody td {
-		padding: 5px 12px;
-		color: #c5cde5;
+		padding: 6px 12px;
+		color: #e2e8f0;
+		font-weight: 600;
+		font-size: 0.76rem;
 		text-align: center;
 		border-bottom: 1px solid #242d47;
 	}
 	.mat-tbl tbody td:first-child {
 		text-align: left;
-		padding-left: 16px;
-		font-weight: 600;
-		color: #dde3f5;
+		padding: 7px 12px 7px 16px;
+		font-weight: 700;
+		color: #f8fafc;
+		font-size: 0.78rem;
 		max-width: 220px;
 		white-space: normal;
 	}
@@ -100,89 +127,35 @@ st.markdown(
 )
 
 
-def leer_csv_robusto(path_csv: Path) -> pd.DataFrame:
-	encodings = ["utf-8", "utf-8-sig", "cp1252", "latin-1"]
-	separadores = [None, ";", ",", "\t", "|"]
-	ultimo_error = None
-
-	for enc in encodings:
-		for sep in separadores:
-			try:
-				return pd.read_csv(
-					path_csv,
-					encoding=enc,
-					sep=sep,
-					engine="python",
-					on_bad_lines="skip",
-				)
-			except Exception as e:
-				ultimo_error = e
-
-	raise RuntimeError(f"No se pudo leer CSV: {ultimo_error}")
-
-
-@st.cache_data(show_spinner=True)
-def leer_carpeta_tabular(carpeta_texto: str, firma_archivos: tuple):
-	carpeta = Path(carpeta_texto)
-	if not carpeta.exists() or not carpeta.is_dir():
-		return pd.DataFrame(), pd.DataFrame()
-
-	extensiones = {".csv", ".xlsx", ".xls", ".json", ".parquet"}
-	archivos = sorted([p for p in carpeta.rglob("*") if p.is_file() and p.suffix.lower() in extensiones])
-
-	dfs = []
-	omitidos = []
-
-	for archivo in archivos:
-		try:
-			sufijo = archivo.suffix.lower()
-			if sufijo == ".csv":
-				tmp = leer_csv_robusto(archivo)
-			elif sufijo in {".xlsx", ".xls"}:
-				tmp = pd.read_excel(archivo)
-			elif sufijo == ".json":
-				tmp = pd.read_json(archivo)
-			elif sufijo == ".parquet":
-				tmp = pd.read_parquet(archivo)
-			else:
-				continue
-
-			if tmp is None or tmp.empty:
-				omitidos.append((archivo.name, "DataFrame vacio"))
-				continue
-
-			tmp["origen_archivo"] = archivo.relative_to(carpeta).as_posix()
-			dfs.append(tmp)
-		except Exception as e:
-			omitidos.append((archivo.name, str(e)))
-
-	if not dfs:
-		return pd.DataFrame(), pd.DataFrame(omitidos, columns=["archivo", "error"])
-
-	df = pd.concat(dfs, ignore_index=True, sort=False)
-	return df, pd.DataFrame(omitidos, columns=["archivo", "error"])
-
-
-def obtener_firma_carpeta(carpeta_texto: str) -> tuple:
-	carpeta = Path(carpeta_texto)
-	if not carpeta.exists() or not carpeta.is_dir():
-		return tuple()
-
-	extensiones = {".csv", ".xlsx", ".xls", ".json", ".parquet"}
-	firma = []
-	for p in sorted([x for x in carpeta.rglob("*") if x.is_file() and x.suffix.lower() in extensiones]):
-		stat = p.stat()
-		firma.append((p.relative_to(carpeta).as_posix(), stat.st_mtime_ns, stat.st_size))
-
-	return tuple(firma)
-
-
 def obtener_firma_archivo(path_texto: str) -> tuple:
 	path = Path(path_texto)
 	if not path.exists() or not path.is_file():
 		return tuple()
 	stat = path.stat()
 	return (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+
+
+def _firma_db(db_path: str) -> tuple:
+	"""Firma del archivo gestiones.db para invalidar cache cuando cambia."""
+	return obtener_firma_archivo(db_path)
+
+
+@st.cache_data(show_spinner="Cargando gestiones desde base de datos...", ttl=None)
+def cargar_desde_sqlite(db_path: str, firma_db: tuple) -> pd.DataFrame:
+	if not Path(db_path).exists():
+		return pd.DataFrame()
+	try:
+		con = sqlite3.connect(db_path)
+		df = pd.read_sql_query(
+			"SELECT * FROM gestiones",
+			con,
+			parse_dates=["Fecha", "FechaPromesa"],
+		)
+		con.close()
+		return df
+	except Exception as e:
+		st.error(f"Error leyendo gestiones.db: {e}")
+		return pd.DataFrame()
 
 
 def primera_columna(df_base: pd.DataFrame, candidatas: list[str]):
@@ -269,10 +242,6 @@ def cargar_catalogo(path_texto: str, firma_catalogo: tuple) -> dict:
 
 
 def construir_mapa_catalogo(catalogo: dict) -> pd.DataFrame:
-	"""Soporta dos formatos:
-	1) Clasico: {"usuario": {"Nombre_Asesor": "...", "Campo": "..."}}
-	2) Con vigencias: {"usuario": {"vigencias": [{"desde": "YYYY-MM-DD", "hasta": "YYYY-MM-DD|None", "Nombre_Asesor": "...", "Campo": "..."}]}}
-	"""
 	filas = []
 	for asesor_gestion, cfg in catalogo.items():
 		if not isinstance(cfg, dict):
@@ -339,7 +308,6 @@ def aplicar_homologacion(df_base: pd.DataFrame, catalogo: dict) -> pd.DataFrame:
 		hasta_ok = salida["hasta"].isna() | (fecha <= salida["hasta"])
 		validas = salida[desde_ok & hasta_ok].copy()
 	else:
-		# Si no hay fecha, prioriza vigencias abiertas y luego la mas reciente.
 		validas = salida.copy()
 
 	if validas.empty:
@@ -394,33 +362,14 @@ def construir_resumen_por_asesor(base_dia: pd.DataFrame, col_asesor: str) -> pd.
 	)
 
 	perfiles_contacto_directo = {
-		"pago parcial",
-		"contesta y cuelga",
-		"ya pago",
-		"promesa de pago",
-		"renuente",
-		"llamar luego",
-		"no hubo acuerdo",
-		"colgo",
-		"voluntad de pago",
-		"promesa de pago con descuento",
-		"no es el encargado del pago",
-		"promesa con tercero",
-		"dificultad de pago",
-		"pago no abonado",
-		"reclamacion",
-		"recordatorio",
-		"encargado renuente",
-		"promesa whatsapp",
-		"abono",
-		"al dia",
+		"pago parcial", "contesta y cuelga", "ya pago", "promesa de pago", "renuente", "llamar luego", 
+		"no hubo acuerdo", "colgo", "voluntad de pago", "promesa de pago con descuento", 
+		"no es el encargado del pago", "promesa con tercero", "dificultad de pago", "pago no abonado", 
+		"reclamacion", "recordatorio", "encargado renuente", "promesa whatsapp", "abono", "al dia",
 	}
 	perfiles_contacto_indirecto = {
-		"equivocado",
-		"mensaje con tercero",
-		"tercero no conoce al titular",
-		"tercero no toma mensaje",
-		"fallecio",
+		"equivocado", "mensaje con tercero", "tercero no conoce al titular", 
+		"tercero no toma mensaje", "fallecio",
 	}
 	perfiles_no_contacto = {"no contesta", "mensaje en buzon", "no contacto", "ilocalizado"}
 	perfiles_promesas = {"promesa de pago", "promesa de pago con descuento", "promesa con tercero"}
@@ -432,24 +381,10 @@ def construir_resumen_por_asesor(base_dia: pd.DataFrame, col_asesor: str) -> pd.
 		mask_no_contacto = perfil_norm.isin(perfiles_no_contacto)
 		mask_promesas = perfil_norm.isin(perfiles_promesas)
 
-		resumen_contacto_directo = (
-			base.loc[mask_directo].groupby(col_asesor, dropna=False)["Cuenta"].nunique(dropna=True).reset_index(name="contacto_directo")
-		)
-		resumen_contacto_indirecto = (
-			base.loc[mask_indirecto]
-			.groupby(col_asesor, dropna=False)["Cuenta"]
-			.nunique(dropna=True)
-			.reset_index(name="contacto_indirecto")
-		)
-		resumen_no_contacto = (
-			base.loc[mask_no_contacto]
-			.groupby(col_asesor, dropna=False)["Cuenta"]
-			.nunique(dropna=True)
-			.reset_index(name="no_contacto")
-		)
-		resumen_promesas = (
-			base.loc[mask_promesas].groupby(col_asesor, dropna=False)["Cuenta"].nunique(dropna=True).reset_index(name="Promesas")
-		)
+		resumen_contacto_directo = base.loc[mask_directo].groupby(col_asesor, dropna=False)["Cuenta"].nunique(dropna=True).reset_index(name="contacto_directo")
+		resumen_contacto_indirecto = base.loc[mask_indirecto].groupby(col_asesor, dropna=False)["Cuenta"].nunique(dropna=True).reset_index(name="contacto_indirecto")
+		resumen_no_contacto = base.loc[mask_no_contacto].groupby(col_asesor, dropna=False)["Cuenta"].nunique(dropna=True).reset_index(name="no_contacto")
+		resumen_promesas = base.loc[mask_promesas].groupby(col_asesor, dropna=False)["Cuenta"].nunique(dropna=True).reset_index(name="Promesas")
 	else:
 		resumen_contacto_directo = pd.DataFrame(columns=[col_asesor, "contacto_directo"])
 		resumen_contacto_indirecto = pd.DataFrame(columns=[col_asesor, "contacto_indirecto"])
@@ -503,52 +438,58 @@ def construir_resumen_por_asesor(base_dia: pd.DataFrame, col_asesor: str) -> pd.
 	return resumen.sort_values("valor_promesa", ascending=False).reset_index(drop=True)
 
 
-def calcular_deberia_llevar(base_dia: pd.DataFrame, resumen_diario: pd.DataFrame, col_asesor: str, fecha_sel) -> pd.DataFrame:
-	if "Hora" not in base_dia.columns:
+def calcular_deberia_llevar(base_rango: pd.DataFrame, resumen_diario: pd.DataFrame, col_asesor: str) -> pd.DataFrame:
+	if "Hora" not in base_rango.columns or "Fecha" not in base_rango.columns or base_rango.empty:
 		salida = resumen_diario.copy()
 		salida["deberia_llevar"] = 0.0
 		return salida
 
-	base_horas = base_dia[[col_asesor, "Hora"]].copy()
-	base_horas["Hora"] = pd.to_timedelta(base_horas["Hora"].astype("string"), errors="coerce")
-	base_horas = base_horas.dropna(subset=["Hora"])
-
-	if base_horas.empty:
-		salida = resumen_diario.copy()
-		salida["deberia_llevar"] = 0.0
-		return salida
-
-	primera_hora_asesor = base_horas.groupby(col_asesor, dropna=False)["Hora"].min()
-
-	fecha_reporte = pd.to_datetime(fecha_sel).normalize()
 	hoy = pd.Timestamp.now().normalize()
-	if fecha_reporte == hoy:
-		agora = pd.Timestamp.now()
-		hora_corte = pd.to_timedelta(f"{agora.hour:02d}:{agora.minute:02d}:{agora.second:02d}")
-	else:
-		hora_corte = base_horas["Hora"].max()
-
-	# Horas productivas = tiempo transcurrido - cruce con almuerzo (12:00 a 13:00).
-	total_transcurrido = (hora_corte - primera_hora_asesor).clip(lower=pd.Timedelta(0))
+	agora = pd.Timestamp.now()
+	hora_corte_hoy = pd.to_timedelta(f"{agora.hour:02d}:{agora.minute:02d}:{agora.second:02d}")
 	inicio_almuerzo = pd.to_timedelta("12:00:00")
 	fin_almuerzo = pd.to_timedelta("13:00:00")
 
-	if hora_corte <= inicio_almuerzo:
-		cruce_almuerzo = pd.Series(pd.Timedelta(0), index=primera_hora_asesor.index)
-	else:
-		fin_cruce = min(hora_corte, fin_almuerzo)
-		inicio_cruce = primera_hora_asesor.where(primera_hora_asesor > inicio_almuerzo, inicio_almuerzo)
-		cruce_almuerzo = (fin_cruce - inicio_cruce).clip(lower=pd.Timedelta(0))
+	totales_asesor = {}
 
-	horas_productivas = (total_transcurrido - cruce_almuerzo).clip(lower=pd.Timedelta(0))
-	deberia_llevar = (horas_productivas.dt.total_seconds() / 3600.0) * 25.0
-	deberia_llevar = deberia_llevar.clip(lower=0)
-	deberia_llevar = (deberia_llevar / 5.0).round() * 5.0
+	for fecha, df_dia in base_rango.groupby("Fecha"):
+		base_horas = df_dia[[col_asesor, "Hora"]].copy()
+		base_horas["Hora"] = pd.to_timedelta(base_horas["Hora"].astype("string"), errors="coerce")
+		base_horas = base_horas.dropna(subset=["Hora"])
 
-	tmp = deberia_llevar.reset_index(name="deberia_llevar")
+		if base_horas.empty:
+			continue
+
+		primera_hora_asesor = base_horas.groupby(col_asesor, dropna=False)["Hora"].min()
+
+		fecha_norm = pd.to_datetime(fecha).normalize()
+		if fecha_norm == hoy:
+			hora_corte = hora_corte_hoy
+		else:
+			hora_corte = base_horas["Hora"].max()
+
+		total_transcurrido = (hora_corte - primera_hora_asesor).clip(lower=pd.Timedelta(0))
+
+		if hora_corte <= inicio_almuerzo:
+			cruce_almuerzo = pd.Series(pd.Timedelta(0), index=primera_hora_asesor.index)
+		else:
+			fin_cruce = min(hora_corte, fin_almuerzo)
+			inicio_cruce = primera_hora_asesor.where(primera_hora_asesor > inicio_almuerzo, inicio_almuerzo)
+			cruce_almuerzo = (fin_cruce - inicio_cruce).clip(lower=pd.Timedelta(0))
+
+		horas_productivas = (total_transcurrido - cruce_almuerzo).clip(lower=pd.Timedelta(0))
+		deberia = (horas_productivas.dt.total_seconds() / 3600.0) * 25.0
+		deberia = deberia.clip(lower=0)
+		deberia = (deberia / 5.0).round() * 5.0
+
+		for asesor, val in deberia.items():
+			totales_asesor[asesor] = totales_asesor.get(asesor, 0.0) + float(val)
+
+	tmp = pd.DataFrame(list(totales_asesor.items()), columns=[col_asesor, "deberia_llevar"])
 	salida = resumen_diario.merge(tmp, on=col_asesor, how="left")
 	salida["deberia_llevar"] = salida["deberia_llevar"].fillna(0.0)
 	return salida
+
 
 
 def icono_pct(v: float) -> str:
@@ -627,276 +568,136 @@ def _render_matriz_html(df: pd.DataFrame) -> str:
 	)
 
 
-def _normalizar_columnas_vista(df_base: pd.DataFrame) -> pd.DataFrame:
-	"""Normaliza nombres y tipos para la vista web de productividad."""
-	df = df_base.copy()
-	if df.empty:
-		return df
+# ── Sección de Actualización de Datos (Mantenida en Sidebar) ──────────────
+with st.sidebar.expander("🔄 Actualizar desde Carpeta Local", expanded=False):
+    carpetas_texto = st.text_area(
+        "Carpetas Gestiones (una por línea)",
+        value="\n".join(DEFAULT_CARPETAS),
+        key="carpetas_gestiones_input",	
+        height=80,
+    )
+    carpetas_lista = [c.strip() for c in carpetas_texto.splitlines() if c.strip()]
+    forzar_reimport = st.checkbox("Reimportar todo", value=False, key="chk_forzar_etl")
+    if st.button("Recargar Gestiones", key="btn_recargar_db", use_container_width=True):
+        with st.spinner("Procesando e importando gestiones..."):
+            res_etl = ejecutar_etl(carpeta_path=carpetas_lista, db_path=_DB_PATH, forzar=forzar_reimport)
+            st.cache_data.clear()
+            if "error" in res_etl:
+                st.error(res_etl["error"])
+            else:
+                st.success(
+                    f"¡Base de datos actualizada!\n\n"
+                    f"• Registros nuevos: {res_etl['nuevas']}\n"
+                    f"• Archivos procesados: {res_etl['procesados']}\n"
+                    f"• Sin cambios: {res_etl['sin_cambios']}"
+                )
+                if "advertencia" in res_etl:
+                    st.warning(res_etl["advertencia"])
+                st.rerun()
 
-	mapa = {str(c).strip().lower(): c for c in df.columns}
+json_catalogo = "asesores_catalogo.json"
 
-	def _renombrar(candidatas: list[str], destino: str):
-		for c in candidatas:
-			col = mapa.get(c.lower())
-			if col and col != destino:
-				df.rename(columns={col: destino}, inplace=True)
-				break
+# ── Cargar datos desde SQLite ────────────────────────────────────────────
+if not Path(_DB_PATH).exists():
+	st.error(
+		"No se encontro la base de datos **gestiones.db**.\n\n"
+		"Utiliza la sección **'🔄 Actualizar Base de Datos'** en la barra lateral para procesar los archivos de gestiones."
+	)
+	st.stop()
 
-	_renombrar(["fecha", "fecha_gestion", "fechagestion"], "Fecha")
-	_renombrar(["asesor", "nombre_asesor", "nombre asesor", "asesor_gestion"], "Asesor")
-	_renombrar(["campo"], "Campo")
-	_renombrar(["marca"], "Marca")
-	_renombrar(["cuentas_gestionadas", "cuentas gestionadas"], "cuentas_gestionadas")
-	_renombrar(["gest_cuentas", "gest cuentas", "cuentas_unicas", "cuentas unicas"], "Gest_cuentas")
-	_renombrar(["deberia_llevar", "deberia llevar"], "deberia_llevar")
-	_renombrar(["clientes_gestionados", "clientes gestionados"], "clientes_Gestionados")
-	_renombrar(["contacto_directo", "contacto directo"], "contacto_directo")
-	_renombrar(["contacto_indirecto", "contacto indirecto"], "contacto_indirecto")
-	_renombrar(["no_contacto", "no contacto"], "no_contacto")
-	_renombrar(["promesas"], "Promesas")
-	_renombrar(["valor_promesa", "valor promesa"], "valor_promesa")
+df_raw = cargar_desde_sqlite(_DB_PATH, _firma_db(_DB_PATH))
+if df_raw.empty:
+	st.warning("La base de datos esta vacia. Utiliza el botón en la barra lateral para recargar las gestiones.")
+	st.stop()
 
-	if "Fecha" in df.columns:
-		df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce").dt.normalize()
 
-	if "Asesor" not in df.columns:
-		df["Asesor"] = "Sin asesor"
+# Normalizar Fecha
+df_raw["Fecha"] = pd.to_datetime(df_raw["Fecha"], errors="coerce").dt.normalize()
 
-	for c in [
-		"cuentas_gestionadas",
-		"Gest_cuentas",
-		"deberia_llevar",
-		"clientes_Gestionados",
-		"contacto_directo",
-		"contacto_indirecto",
-		"no_contacto",
-		"Promesas",
-		"valor_promesa",
-	]:
-		if c not in df.columns:
-			df[c] = 0
-		df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+firma_catalogo = obtener_firma_archivo(json_catalogo)
+catalogo = cargar_catalogo(json_catalogo, firma_catalogo)
+df_proc = aplicar_homologacion(df_raw, catalogo)
 
-	if "Gest_cuentas" in df.columns:
-		df["Gest_cuentas"] = df["Gest_cuentas"].where(df["Gest_cuentas"] > 0, df["cuentas_gestionadas"])
+if "Fecha" not in df_proc.columns:
+	st.error("No existe la columna Fecha despues de las transformaciones.")
+	st.stop()
+
+fechas_validas = sorted(df_proc["Fecha"].dropna().unique())
+if not fechas_validas:
+	st.error("No hay fechas validas para filtrar.")
+	st.stop()
+
+min_fecha_db = pd.to_datetime(fechas_validas[0]).date()
+max_fecha_db = pd.to_datetime(fechas_validas[-1]).date()
+
+
+# ── Sección de Filtros (Movida a la Pantalla Principal) ──────────────────
+st.markdown("### 🔍 Filtros")
+f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns(5)
+
+with f_col1:
+	rango_sel = st.date_input(
+		"Rango de Fechas",
+		value=(max_fecha_db, max_fecha_db),
+		min_value=min_fecha_db,
+		max_value=max_fecha_db,
+	)
+
+campos_disponibles = sorted(df_proc.get("Campo", pd.Series(dtype="string")).dropna().astype(str).unique().tolist())
+with f_col2:
+	campos_sel = st.multiselect("Campo", options=campos_disponibles)
+
+col_asesor = "Nombre_Asesor" if "Nombre_Asesor" in df_proc.columns else "asesor_gestion"
+asesores_disponibles = sorted(df_proc[col_asesor].dropna().astype(str).unique().tolist())
+with f_col3:
+	asesores_sel = st.multiselect("Asesor", options=asesores_disponibles)
+
+col_marca = buscar_columna_case_insensitive(df_proc, ["Marca"])
+marcas_disponibles = sorted(df_proc[col_marca].dropna().astype(str).unique().tolist()) if col_marca else []
+with f_col4:
+	marcas_sel = st.multiselect("Marca", options=marcas_disponibles)
+
+col_crm = buscar_columna_case_insensitive(df_proc, ["CRM", "crm"])
+crms_disponibles = sorted(df_proc[col_crm].dropna().astype(str).unique().tolist()) if col_crm else []
+with f_col5:
+	crms_sel = st.multiselect("CRM", options=crms_disponibles)
+
+st.divider()
+# ──────────────────────────────────────────────────────────────────────────
+
+if isinstance(rango_sel, (tuple, list)):
+	if len(rango_sel) == 2:
+		fecha_desde, fecha_hasta = rango_sel
+	elif len(rango_sel) == 1:
+		fecha_desde = fecha_hasta = rango_sel[0]
 	else:
-		df["Gest_cuentas"] = df["cuentas_gestionadas"]
-
-	df["%_contactabilidad"] = (
-		df["contacto_directo"].div(df["cuentas_gestionadas"].replace(0, pd.NA)).fillna(0) * 100
-	).round(2)
-	df["%_Conversion"] = (
-		df["Promesas"].div(df["contacto_directo"].replace(0, pd.NA)).fillna(0) * 100
-	).round(2)
-
-	return df
-
-
-@st.cache_data(show_spinner=False)
-def cargar_vista_productividad_desde_secrets() -> pd.DataFrame:
-	"""Carga una vista minima desde st.secrets (sin depender de archivos locales)."""
-	try:
-		cfg = st.secrets.get("productividad_view", {})
-	except Exception:
-		cfg = {}
-
-	if not cfg:
-		return pd.DataFrame()
-
-	registros = None
-	if "rows" in cfg:
-		registros = cfg.get("rows")
-	elif "rows_json" in cfg:
-		try:
-			registros = json.loads(cfg.get("rows_json") or "[]")
-		except Exception:
-			registros = None
-	elif "url_csv" in cfg:
-		try:
-			df_url = pd.read_csv(cfg.get("url_csv"))
-			return _normalizar_columnas_vista(df_url)
-		except Exception:
-			return pd.DataFrame()
-
-	if registros is None:
-		return pd.DataFrame()
-
-	try:
-		df = pd.DataFrame(registros)
-	except Exception:
-		return pd.DataFrame()
-
-	return _normalizar_columnas_vista(df)
-
-
-@st.cache_data(show_spinner=False)
-def cargar_vista_productividad_desde_archivo(path_texto: str = "productividad_view.json") -> pd.DataFrame:
-	path = Path(path_texto)
-	if not path.exists() or not path.is_file():
-		return pd.DataFrame()
-
-	try:
-		raw = json.loads(path.read_text(encoding="utf-8"))
-		if isinstance(raw, list):
-			df = pd.DataFrame(raw)
-		elif isinstance(raw, dict):
-			df = pd.DataFrame(raw.get("rows", []))
-		else:
-			return pd.DataFrame()
-	except Exception:
-		return pd.DataFrame()
-
-	return _normalizar_columnas_vista(df)
-
-
-def construir_resumen_desde_vista(base_vista: pd.DataFrame) -> pd.DataFrame:
-	col_asesor = "Asesor"
-	aggs = {
-		"cuentas_gestionadas": "sum",
-		"Gest_cuentas": "sum",
-		"deberia_llevar": "sum",
-		"clientes_Gestionados": "sum",
-		"contacto_directo": "sum",
-		"contacto_indirecto": "sum",
-		"no_contacto": "sum",
-		"Promesas": "sum",
-		"valor_promesa": "sum",
-	}
-
-	resumen = base_vista.groupby(col_asesor, dropna=False, as_index=False).agg(aggs)
-	for c in [
-		"cuentas_gestionadas",
-		"Gest_cuentas",
-		"clientes_Gestionados",
-		"contacto_directo",
-		"contacto_indirecto",
-		"no_contacto",
-		"Promesas",
-	]:
-		resumen[c] = pd.to_numeric(resumen[c], errors="coerce").fillna(0).astype(int)
-
-	resumen["deberia_llevar"] = pd.to_numeric(resumen["deberia_llevar"], errors="coerce").fillna(0)
-	resumen["valor_promesa"] = pd.to_numeric(resumen["valor_promesa"], errors="coerce").fillna(0)
-	resumen["%_contactabilidad"] = (
-		resumen["contacto_directo"].div(resumen["Gest_cuentas"].replace(0, pd.NA)).fillna(0) * 100
-	).round(2)
-	resumen["%_Conversion"] = (
-		resumen["Promesas"].div(resumen["contacto_directo"].replace(0, pd.NA)).fillna(0) * 100
-	).round(2)
-
-	return resumen.sort_values("valor_promesa", ascending=False).reset_index(drop=True)
-
-
-st.sidebar.title("Filtros")
-
-df_omitidos = pd.DataFrame(columns=["archivo", "error"])
-df_vista = cargar_vista_productividad_desde_secrets()
-fuente_vista = ""
-
-if not df_vista.empty:
-	fuente_vista = "secrets"
+		fecha_desde = fecha_hasta = max_fecha_db
 else:
-	df_vista = cargar_vista_productividad_desde_archivo("productividad_view.json")
-	if not df_vista.empty:
-		fuente_vista = "archivo"
+	fecha_desde = fecha_hasta = rango_sel
 
-if not df_vista.empty:
-	if fuente_vista == "secrets":
-		st.caption("Fuente activa: vista minima desde st.secrets (sin archivos locales)")
-	else:
-		st.caption("Fuente activa: productividad_view.json versionado en el repositorio")
-	df_proc = df_vista.copy()
-	col_asesor = "Asesor"
-	col_marca = "Marca" if "Marca" in df_proc.columns else None
+f_desde_norm = pd.to_datetime(fecha_desde).normalize()
+f_hasta_norm = pd.to_datetime(fecha_hasta).normalize()
 
-	if "Fecha" not in df_proc.columns:
-		st.error("La vista de productividad no incluye la columna Fecha.")
-		st.stop()
+base = df_proc[(df_proc["Fecha"] >= f_desde_norm) & (df_proc["Fecha"] <= f_hasta_norm)].copy()
+if campos_sel and "Campo" in base.columns:
+	base = base[base["Campo"].isin(campos_sel)]
+if asesores_sel:
+	base = base[base[col_asesor].isin(asesores_sel)]
+if marcas_sel and col_marca in base.columns:
+	base = base[base[col_marca].isin(marcas_sel)]
+if crms_sel and col_crm in base.columns:
+	base = base[base[col_crm].isin(crms_sel)]
 
-	fechas_validas = sorted(df_proc["Fecha"].dropna().unique())
-	if not fechas_validas:
-		st.error("No hay fechas validas para filtrar en la vista de productividad.")
-		st.stop()
+base, filas_duplicadas_removidas = deduplicar_por_llave_negocio(base, col_asesor)
 
-	fecha_sel = st.sidebar.date_input("Dia", value=pd.to_datetime(fechas_validas[-1]).date())
-	campos_disponibles = sorted(df_proc.get("Campo", pd.Series(dtype="string")).dropna().astype(str).unique().tolist())
-	campos_sel = st.sidebar.multiselect("Campo", options=campos_disponibles)
-	asesores_disponibles = sorted(df_proc[col_asesor].dropna().astype(str).unique().tolist())
-	asesores_sel = st.sidebar.multiselect("Asesor", options=asesores_disponibles)
-	marcas_disponibles = sorted(df_proc[col_marca].dropna().astype(str).unique().tolist()) if col_marca else []
-	marcas_sel = st.sidebar.multiselect("Marca", options=marcas_disponibles)
+if base.empty:
+	st.info("No hay datos para los filtros seleccionados.")
+	st.stop()
 
-	base = df_proc[df_proc["Fecha"] == pd.to_datetime(fecha_sel).normalize()].copy()
-	if campos_sel and "Campo" in base.columns:
-		base = base[base["Campo"].isin(campos_sel)]
-	if asesores_sel:
-		base = base[base[col_asesor].isin(asesores_sel)]
-	if marcas_sel and col_marca in base.columns:
-		base = base[base[col_marca].isin(marcas_sel)]
+resumen_diario = construir_resumen_por_asesor(base, col_asesor)
+resumen_diario = calcular_deberia_llevar(base, resumen_diario, col_asesor)
 
-	if base.empty:
-		st.info("No hay datos para los filtros seleccionados.")
-		st.stop()
 
-	resumen_diario = construir_resumen_desde_vista(base)
-else:
-	# Configuracion fija de origen (sin controles en sidebar)
-	carpeta_fuente = r"C:\Users\felix.contreras\Desktop\Gestiones"
-	json_catalogo = "asesores_catalogo.json"
-
-	firma_archivos = obtener_firma_carpeta(carpeta_fuente)
-	df_raw, df_omitidos = leer_carpeta_tabular(carpeta_fuente, firma_archivos)
-	if df_raw.empty:
-		st.warning("No se pudieron cargar archivos tabulares desde la carpeta indicada.")
-		if not df_omitidos.empty:
-			st.dataframe(df_omitidos, use_container_width=True)
-		st.stop()
-
-	df_proc = transformar_df(df_raw)
-	firma_catalogo = obtener_firma_archivo(json_catalogo)
-	catalogo = cargar_catalogo(json_catalogo, firma_catalogo)
-	df_proc = aplicar_homologacion(df_proc, catalogo)
-
-	if "Fecha" not in df_proc.columns:
-		st.error("No existe la columna Fecha despues de las transformaciones.")
-		st.stop()
-
-	fechas_validas = sorted(df_proc["Fecha"].dropna().unique())
-	if not fechas_validas:
-		st.error("No hay fechas validas para filtrar.")
-		st.stop()
-
-	fecha_sel = st.sidebar.date_input("Dia", value=pd.to_datetime(fechas_validas[-1]).date())
-
-	campos_disponibles = sorted(df_proc.get("Campo", pd.Series(dtype="string")).dropna().astype(str).unique().tolist())
-	campos_sel = st.sidebar.multiselect("Campo", options=campos_disponibles)
-
-	col_asesor = "Nombre_Asesor" if "Nombre_Asesor" in df_proc.columns else "asesor_gestion"
-	asesores_disponibles = sorted(df_proc[col_asesor].dropna().astype(str).unique().tolist())
-	asesores_sel = st.sidebar.multiselect("Asesor", options=asesores_disponibles)
-
-	col_marca = buscar_columna_case_insensitive(df_proc, ["Marca"])
-	marcas_disponibles = sorted(df_proc[col_marca].dropna().astype(str).unique().tolist()) if col_marca else []
-	marcas_sel = st.sidebar.multiselect("Marca", options=marcas_disponibles)
-
-	base = df_proc[df_proc["Fecha"] == pd.to_datetime(fecha_sel).normalize()].copy()
-	if campos_sel and "Campo" in base.columns:
-		base = base[base["Campo"].isin(campos_sel)]
-	if asesores_sel:
-		base = base[base[col_asesor].isin(asesores_sel)]
-	if marcas_sel and col_marca in base.columns:
-		base = base[base[col_marca].isin(marcas_sel)]
-
-	base, filas_duplicadas_removidas = deduplicar_por_llave_negocio(base, col_asesor)
-
-	if base.empty:
-		st.info("No hay datos para los filtros seleccionados.")
-		st.stop()
-
-	resumen_diario = construir_resumen_por_asesor(base, col_asesor)
-	resumen_diario = calcular_deberia_llevar(base, resumen_diario, col_asesor, fecha_sel)
-
-# Medidas para tarjetas KPI (dinamicas segun filtros)
 total_cuentas_gestionadas = int(resumen_diario["cuentas_gestionadas"].sum())
 
 if "Identificacion" in base.columns:
@@ -911,6 +712,7 @@ promedio_cuentas_gestionadas_x_asesor = total_cuentas_gestionadas / asesores_en_
 promedio_cuentas_gestionadas_x_asesor_kpi = int(math.ceil(promedio_cuentas_gestionadas_x_asesor))
 promedio_cuentas_unicas_x_asesor = float(resumen_diario["Gest_cuentas"].mean()) if not resumen_diario.empty else 0.0
 promedio_cuentas_unicas_x_asesor_kpi = int(math.ceil(promedio_cuentas_unicas_x_asesor))
+promedio_clientes_gestionados_x_asesor = float(resumen_diario["clientes_Gestionados"].mean()) if not resumen_diario.empty else 0.0
 
 cantidad_promesas = int(resumen_diario["Promesas"].sum()) if "Promesas" in resumen_diario.columns else 0
 total_valor_promesas = float(resumen_diario["valor_promesa"].sum()) if "valor_promesa" in resumen_diario.columns else 0.0
@@ -930,60 +732,97 @@ st.markdown(_render_kpi_row([
 	{"label": "Promedio promesas x asesor", "value": f"{promedio_promesas_kpi:,}".replace(",", "."), "icon": "📈", "color": "#fb923c"},
 ]), unsafe_allow_html=True)
 
-_ahora = pd.Timestamp.now()
-_min_redondeado = ((_ahora.minute) // 10) * 10
-_hora_actualiz = _ahora.replace(minute=_min_redondeado, second=0, microsecond=0).strftime("%H:%M")
-st.subheader(f"Matriz de Productividad   ·   Actualizado: {_hora_actualiz}")
+_hora_actualiz = None
+if "Hora" in base.columns and not base.empty:
+	_fechas_dt = pd.to_datetime(base["Fecha"], errors="coerce")
+	_horas_td = pd.to_timedelta(base["Hora"].astype("string"), errors="coerce")
+	_fechas_horas = _fechas_dt + _horas_td
+	_max_gestion = _fechas_horas.dropna().max()
+	if pd.notna(_max_gestion):
+		_min_redondeado = (_max_gestion.minute // 10) * 10
+		_hora_actualiz = _max_gestion.replace(minute=_min_redondeado, second=0, microsecond=0).strftime("%H:%M")
+
+if not _hora_actualiz:
+	_ahora = pd.Timestamp.now()
+	_min_redondeado = ((_ahora.minute) // 10) * 10
+	_hora_actualiz = _ahora.replace(minute=_min_redondeado, second=0, microsecond=0).strftime("%H:%M")
+
+
+st.divider()
+
+col1, col2, col3, col4, col5, col6=st.columns(6)
+with col1:
+	st.image("scripts/image/images.jpg", width=300)
+with col6:
+	st.image("scripts/image/logo_claro.png", width=200)
+
+st.markdown(
+	f"<h3 style='text-align: center; margin-top: 15px; margin-bottom: 15px;'>📊 Productividad x Asesor - Campaña CLARO &nbsp;&nbsp;·&nbsp;&nbsp; Actualizado: {_hora_actualiz}</h3>",
+	unsafe_allow_html=True,
+)
 
 matriz_ui = resumen_diario.copy()
 
-# Semaforo de gestion contra promedio de asesores en vista
-def icono_semaforo_gestion(v: int, promedio: float) -> str:
-	if v < promedio:
-		return "🔴"
-	if abs(v - promedio) < 1e-9:
-		return "🟡"
-	return "🟢"
 
-matriz_ui["cuentas_gestionadas"] = matriz_ui["cuentas_gestionadas"].map(
-	lambda v: f"{icono_semaforo_gestion(int(v), promedio_cuentas_gestionadas_x_asesor)} {int(v):,}".replace(",", ".")
-)
+def icono_semaforo_deberia(gestionados: int, deberia: float) -> str:
+	if gestionados >= deberia:
+		return "🟢"
+	return "🔴"
 
-min_valor, max_valor = resumen_diario["valor_promesa"].min(), resumen_diario["valor_promesa"].max()
-matriz_ui["valor_promesa"] = matriz_ui["valor_promesa"].map(
-	lambda v: f"{barra_azul_monto(v, min_valor, max_valor)} {formato_moneda(v)}"
-)
 
-min_contact, max_contact = resumen_diario["%_contactabilidad"].min(), resumen_diario["%_contactabilidad"].max()
-min_conv, max_conv = resumen_diario["%_Conversion"].min(), resumen_diario["%_Conversion"].max()
+def preparar_matriz_ui(df_resumen: pd.DataFrame, col_asesor: str, incluir_fecha: bool = False) -> pd.DataFrame:
+	if df_resumen.empty:
+		return pd.DataFrame()
 
-matriz_ui["%_contactabilidad"] = matriz_ui["%_contactabilidad"].map(
-	lambda v: f"{icono_pct_relativo(v, min_contact, max_contact)} {v:.2f}%"
-)
-matriz_ui["%_Conversion"] = matriz_ui["%_Conversion"].map(
-	lambda v: f"{icono_pct_relativo(v, min_conv, max_conv)} {v:.2f}%"
-)
-matriz_ui["deberia_llevar"] = matriz_ui["deberia_llevar"].map(
-	lambda v: f"{int(round(v)):,.0f}".replace(",", ".")
-)
+	resumen_ui = df_resumen.copy()
+	resumen_ui["cuentas_gestionadas"] = resumen_ui["cuentas_gestionadas"].map(
+		lambda v: f"{int(v):,}".replace(",", ".")
+	)
+	resumen_ui["clientes_Gestionados"] = resumen_ui.apply(
+		lambda r: f"{icono_semaforo_deberia(int(r['clientes_Gestionados']), float(r['deberia_llevar']))} {int(r['clientes_Gestionados']):,}".replace(",", "."),
+		axis=1,
+	)
 
-columnas_vista = [
-	col_asesor,
-	"cuentas_gestionadas",
-	"deberia_llevar",
-	"clientes_Gestionados",
-	"contacto_directo",
-	"contacto_indirecto",
-	"no_contacto",
-	"Promesas",
-	"valor_promesa",
-	"%_contactabilidad",
-	"%_Conversion",
-]
+	min_valor, max_valor = df_resumen["valor_promesa"].min(), df_resumen["valor_promesa"].max()
+	resumen_ui["valor_promesa"] = resumen_ui["valor_promesa"].map(
+		lambda v: f"{barra_azul_monto(v, min_valor, max_valor)} {formato_moneda(v)}"
+	)
 
-matriz_mostrar = matriz_ui[columnas_vista].rename(
-	columns={
+	min_contact, max_contact = df_resumen["%_contactabilidad"].min(), df_resumen["%_contactabilidad"].max()
+	min_conv, max_conv = df_resumen["%_Conversion"].min(), df_resumen["%_Conversion"].max()
+
+	resumen_ui["%_contactabilidad"] = resumen_ui["%_contactabilidad"].map(
+		lambda v: f"{icono_pct_relativo(v, min_contact, max_contact)} {v:.2f}%"
+	)
+	resumen_ui["%_Conversion"] = resumen_ui["%_Conversion"].map(
+		lambda v: f"{icono_pct_relativo(v, min_conv, max_conv)} {v:.2f}%"
+	)
+	resumen_ui["deberia_llevar"] = resumen_ui["deberia_llevar"].map(
+		lambda v: f"{int(round(v)):,.0f}".replace(",", ".")
+	)
+
+	columnas_vista = [
+		col_asesor,
+	]
+	if incluir_fecha and "Fecha" in resumen_ui.columns:
+		columnas_vista.append("Fecha")
+
+	columnas_vista.extend([
+		"cuentas_gestionadas",
+		"deberia_llevar",
+		"clientes_Gestionados",
+		"contacto_directo",
+		"contacto_indirecto",
+		"no_contacto",
+		"Promesas",
+		"valor_promesa",
+		"%_contactabilidad",
+		"%_Conversion",
+	])
+
+	renombrar_mapa = {
 		col_asesor: "Asesor",
+		"Fecha": "Fecha",
 		"cuentas_gestionadas": "Cuentas\ngestionadas",
 		"clientes_Gestionados": "Clientes\ngestionados",
 		"contacto_directo": "Contacto\ndirecto",
@@ -995,26 +834,65 @@ matriz_mostrar = matriz_ui[columnas_vista].rename(
 		"%_contactabilidad": "%\nContactabilidad",
 		"%_Conversion": "%\nConversion",
 	}
+
+	return resumen_ui[columnas_vista].rename(columns=renombrar_mapa)
+
+
+# ── Renderizado Reporte 1: Consolidado del Rango ─────────────────────────
+matriz_mostrar_consolidado = preparar_matriz_ui(resumen_diario, col_asesor, incluir_fecha=False)
+st.markdown(_render_matriz_html(matriz_mostrar_consolidado), unsafe_allow_html=True)
+
+csv_export_consolidado = resumen_diario.to_csv(index=False).encode("utf-8")
+nombre_archivo_consolidado = (
+	f"resumen_productividad_{fecha_desde}.csv"
+	if fecha_desde == fecha_hasta
+	else f"resumen_productividad_{fecha_desde}_a_{fecha_hasta}.csv"
 )
-
-
-
-st.markdown(_render_matriz_html(matriz_mostrar), unsafe_allow_html=True)
-
-csv_export = resumen_diario.to_csv(index=False).encode("utf-8")
 st.download_button(
-	label="Descargar resumen filtrado (CSV)",
-	data=csv_export,
-	file_name=f"resumen_productividad_{fecha_sel}.csv",
+	label="Descargar resumen consolidado (CSV)",
+	data=csv_export_consolidado,
+	file_name=nombre_archivo_consolidado,
 	mime="text/csv",
+	key="btn_descargar_consolidado",
 )
 
-with st.expander("Ver archivos omitidos"):
-	if df_omitidos.empty:
-		st.write("Sin archivos omitidos.")
-	else:
-		st.dataframe(df_omitidos, use_container_width=True, hide_index=True)
+st.divider()
 
-with st.expander("Ver base filtrada (todas las columnas)"):
-	st.dataframe(base, use_container_width=False, hide_index=True, height=520)
+
+col1, col2, col3, col4, col5, col6=st.columns(6)
+with col1:
+	st.image("scripts/image/images.jpg", width=300)
+with col6:
+	st.image("scripts/image/logo_claro.png", width=200)
+
+# ── Renderizado Reporte 2: Detalle Diario por Asesor ──────────────────────
+st.markdown("<h3 style='text-align: center; margin-top: 20px; margin-bottom: 15px;'>📅 Detalle de Gestiones por Día y Asesor</h3>", unsafe_allow_html=True)
+
+lista_resumenes_diarios = []
+for fecha_val, df_dia in base.groupby("Fecha"):
+	res_dia = construir_resumen_por_asesor(df_dia, col_asesor)
+	res_dia = calcular_deberia_llevar(df_dia, res_dia, col_asesor)
+	res_dia["Fecha"] = pd.to_datetime(fecha_val).strftime("%d/%m/%Y")
+	res_dia["_fecha_dt"] = pd.to_datetime(fecha_val)
+	lista_resumenes_diarios.append(res_dia)
+
+if lista_resumenes_diarios:
+	resumen_diario_por_fecha = pd.concat(lista_resumenes_diarios, ignore_index=True)
+	resumen_diario_por_fecha = resumen_diario_por_fecha.sort_values(
+		by=[col_asesor, "_fecha_dt"], ascending=[True, True]
+	).drop(columns=["_fecha_dt"])
+
+	matriz_mostrar_diario = preparar_matriz_ui(resumen_diario_por_fecha, col_asesor, incluir_fecha=True)
+	st.markdown(_render_matriz_html(matriz_mostrar_diario), unsafe_allow_html=True)
+
+	csv_export_diario = resumen_diario_por_fecha.to_csv(index=False).encode("utf-8")
+	nombre_archivo_diario = f"detalle_diario_productividad_{fecha_desde}_a_{fecha_hasta}.csv"
+	st.download_button(
+		label="Descargar detalle diario por asesor (CSV)",
+		data=csv_export_diario,
+		file_name=nombre_archivo_diario,
+		mime="text/csv",
+		key="btn_descargar_diario",
+	)
+
 
