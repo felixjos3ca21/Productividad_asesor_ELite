@@ -22,14 +22,6 @@ if str(_REPO_ROOT) not in sys.path:
 _ICON = Path(__file__).parent / "scripts" / "image" / "icono.ico"
 st.set_page_config(page_title="Elite Abogados BPO - Productividad", layout="wide", page_icon=str(_ICON))
 
-col1, col2, col3, col4, col5, col6=st.columns(6)
-with col1:
-	st.image("scripts/image/images.jpg", width=300)
-with col6:
-	st.image("scripts/image/logo_claro.png", width=200)
-	
-	
-
 st.title("Productividad Asesores")
 
 
@@ -752,7 +744,7 @@ st.divider()
 
 col1, col2, col3, col4, col5, col6=st.columns(6)
 with col1:
-	st.image("scripts/image/images.jpg", width=300)
+	st.image("scripts/image/Elite_H_color.png", width=300)
 with col6:
 	st.image("scripts/image/logo_claro.png", width=200)
 
@@ -861,7 +853,7 @@ st.divider()
 
 col1, col2, col3, col4, col5, col6=st.columns(6)
 with col1:
-	st.image("scripts/image/images.jpg", width=300)
+	st.image("scripts/image/Elite_H_color.png", width=300)
 with col6:
 	st.image("scripts/image/logo_claro.png", width=200)
 
