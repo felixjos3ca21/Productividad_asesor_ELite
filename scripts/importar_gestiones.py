@@ -23,8 +23,9 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-
+from scripts.catalogo_asesores import cargar_catalogo, aplicar_homologacion
 import pandas as pd
+
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 log = logging.getLogger(__name__)
@@ -70,6 +71,27 @@ CREATE TABLE IF NOT EXISTS gestiones (
     Marca               TEXT,
     CRM                 TEXT,
     origen_archivo      TEXT
+);
+"""
+DDL_PAGOS_X_ASESOR = """
+CREATE TABLE IF NOT EXISTS pagos_x_asesor (
+    clave_pago            TEXT PRIMARY KEY,
+    cuenta                TEXT,
+    identificacion        TEXT,
+    usuario_mejor_gestion TEXT,
+    Nombre_Asesor         TEXT,
+    Campo                 TEXT,
+    valor_pago            REAL,
+    fecha_pago            TEXT,
+    fecha_asignacion      TEXT,
+    fechagestion          TEXT,
+    mejorperfil           TEXT,
+    estado                TEXT,
+    marca                 TEXT,
+    customer_type         TEXT,
+    nombre_campana        TEXT,
+    origen_archivo        TEXT,
+    actualizado_en        TEXT NOT NULL
 );
 """
 
@@ -219,9 +241,128 @@ def inicializar_db(db_path: str) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL;")
     con.execute(DDL_GESTIONES)
     con.execute(DDL_ARCHIVOS)
+    con.execute(DDL_PAGOS_X_ASESOR)
     con.commit()
     return con
 
+def leer_carpeta_pagos(carpeta: str) -> pd.DataFrame:
+    carpeta = Path(carpeta)
+    extensiones = {".csv", ".xlsx", ".xls", ".json", ".parquet"}
+    archivos = sorted(p for p in carpeta.rglob("*") if p.is_file() and p.suffix.lower() in extensiones)
+
+    dfs, omitidos = [], []
+    for archivo in archivos:
+        try:
+            sufijo = archivo.suffix.lower()
+            if sufijo == ".csv":
+                tmp = leer_csv_robusto(archivo)
+            elif sufijo in {".xlsx", ".xls"}:
+                tmp = pd.read_excel(archivo, dtype=str)
+            elif sufijo == ".json":
+                tmp = pd.read_json(archivo)
+            elif sufijo == ".parquet":
+                tmp = pd.read_parquet(archivo)
+            else:
+                continue
+            if tmp is None or tmp.empty:
+                omitidos.append((archivo.name, "DataFrame vacio"))
+                continue
+            tmp["origen_archivo"] = archivo.relative_to(carpeta).as_posix()
+            dfs.append(tmp)
+        except Exception as e:
+            omitidos.append((archivo.name, str(e)))
+
+    if omitidos:
+        for nombre, error in omitidos:
+            log.warning("Omitido %s: %s", nombre, error)
+
+    if not dfs:
+        return pd.DataFrame()
+    return pd.concat(dfs, ignore_index=True, sort=False)
+
+def cargar_consolidado_pagos(archivo: str, hoja: str = "Consolidado Pagos") -> pd.DataFrame:
+    df = pd.read_excel(archivo, sheet_name=hoja, usecols=["CUENTA", "PAGO", "FECHA"], dtype={"CUENTA": str})
+    df.columns = df.columns.str.strip().str.upper()
+    df = df.drop_duplicates(subset=["CUENTA", "PAGO", "FECHA"])
+    df = df.groupby("CUENTA", as_index=False).agg(PAGO=("PAGO", "sum"), FECHA=("FECHA", "max"))
+    return df
+
+COLUMNAS_A_DESCARTAR_PAGOS = [
+    'direccion', 'fecha_final', 'email1', 'email2', 'email3', 'email4',
+    'celular1', 'celular2', 'celular3', 'celular4', 'celular5', 'celular6',
+    'celular7', 'celular8', 'celular9', 'celular10', 'fijo1', 'fijo2',
+    'fijo3', 'fijo4', 'ciudad', 'nombrecompleto', 'min', 'plan',
+    'acepta_nocobrorx', 'acepta_salvamento', 'gestion', 'rotacion', 'rotacion_dia',
+    'fechanogestion', 'fechapagossinaplicar', 'numeromarcado', 'fecha_ingreso',
+    'fecha_reingreso', 'fecha_retiro', 'tipo_terminal', 'rango_monto_inicial',
+    'rango_deuda_real', 'salvamento', 'n_servicios', 'casa_cobro', 'pago',
+    'fecha_de_pago', 'estado_actual', 'recuperada', 'red_dth', 'raiz_ranking_alto',
+    'custcode_ranking_alto', 'segmento_cliente_ranking_alto', 'dct_ranking_alto',
+    'agencia_ranking_alto', 'segmento_dto_ranking_alto', 'concepto_ranking_alto',
+    'gestion_ranking_alto', 'raiz_ranking_medio', 'custcode_ranking_medio',
+    'segmento_cliente_ranking_medio', 'agencia_ranking_medio',
+    'concepto_ranking_medio', 'gestion_ranking_medio',
+]
+
+SGA_CODIGOS = {"82", "83", "85", "86", "88", "89"}
+
+COLUMNAS_FINALES_PAGOS = [
+    "cuenta", "identificacion", "usuario_mejor_gestion", "Nombre_Asesor", "Campo",
+    "valor_pago", "fecha_pago", "fecha_asignacion", "fechagestion", "mejorperfil",
+    "estado", "marca", "customer_type", "nombre_campana", "origen_archivo",
+]
+
+
+def transformar_pagos_x_asesor(
+    df_unificado: pd.DataFrame,
+    catalogo: dict,
+    df_pagos_consolidado: pd.DataFrame,
+) -> pd.DataFrame:
+    df = df_unificado.copy()
+    df.drop(columns=COLUMNAS_A_DESCARTAR_PAGOS, inplace=True, errors="ignore")
+
+    df["cuenta_limpia"] = (
+        df["cuenta"].astype("string").str.replace("-", "", regex=False)
+        .str.replace(".", "", regex=False).str.strip()
+    )
+
+    df = pd.merge(df, df_pagos_consolidado, how="left", left_on="cuenta_limpia", right_on="CUENTA")
+    df["PAGO"] = df["PAGO"].astype(str)
+    df["valor_pago"] = df["valor_pago"].fillna(df["PAGO"])
+    df["fecha_pago"] = df["fecha_pago"].fillna(df["FECHA"])
+    df.drop(columns=["PAGO", "FECHA", "CUENTA"], inplace=True, errors="ignore")
+    df["fecha_asignacion"] = pd.to_datetime(df["fecha_asignacion"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["marca"] = df["marca"].replace({"0": "CERO", "0_v": "CERO"}).str.strip().str.upper()
+    df["customer_type"] = df["customer_type_id"].apply(
+        lambda x: "SGA" if str(x).strip() in SGA_CODIGOS else "Masivo"
+    )
+
+    df = df[df["valor_pago"].notna()].copy()
+
+    df = aplicar_homologacion(df, catalogo)  # import desde catalogo_asesores.py
+
+    df["fechagestion"] = pd.to_datetime(df["fechagestion"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["fecha_pago"] = pd.to_datetime(df["fecha_pago"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["fecha_asignacion"] = pd.to_datetime(df["fecha_asignacion"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["identificacion"] = df["identificacion"].astype("string").str.strip()
+
+    df = df.rename(columns={"cuenta_limpia": "cuenta_final"})
+    df = df.drop(columns=["cuenta"], errors="ignore").rename(columns={"cuenta_final": "cuenta"})
+
+    faltan_fecha = df["fecha_asignacion"].isna() | df["fechagestion"].isna()
+    if faltan_fecha.any():
+        log.warning("Filas sin fecha_asignacion/fechagestion, se excluyen: %d", faltan_fecha.sum())
+        df = df.loc[~faltan_fecha].copy()
+
+    df["clave_pago"] = (
+        df["cuenta"].astype(str).str.strip() + "|" +
+        df["fecha_asignacion"] + "|" +
+        df["fechagestion"] + "|" +
+        df["fecha_pago"].fillna("")
+    )
+
+    cols = [c for c in COLUMNAS_FINALES_PAGOS if c in df.columns]
+    return df[["clave_pago"] + cols].copy()
 
 def archivo_ya_procesado(con: sqlite3.Connection, ruta: str, mtime_ns: int, size: int) -> bool:
     row = con.execute(
@@ -264,6 +405,29 @@ def insertar_registros(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     # Mejor: insertar via executemany con INSERT OR IGNORE
     return 0  # se recalcula abajo
 
+def insertar_pagos_x_asesor(con: sqlite3.Connection, df: pd.DataFrame) -> int:
+    if df.empty:
+        return 0
+
+    columnas = ["clave_pago"] + COLUMNAS_FINALES_PAGOS
+    df = df.reindex(columns=columnas)
+
+    sets = ", ".join(f"{c}=excluded.{c}" for c in COLUMNAS_FINALES_PAGOS)
+    placeholders = ",".join(["?" for _ in columnas])
+    sql = f"""
+        INSERT INTO pagos_x_asesor({','.join(columnas)}, actualizado_en)
+        VALUES({placeholders}, datetime('now','localtime'))
+        ON CONFLICT(clave_pago) DO UPDATE SET {sets}, actualizado_en=datetime('now','localtime')
+    """
+
+    filas = [tuple(None if pd.isna(v) else v for v in row) for row in df.itertuples(index=False, name=None)]
+
+    antes = con.execute("SELECT COUNT(*) FROM pagos_x_asesor").fetchone()[0]
+    con.executemany(sql, filas)
+    con.commit()
+    despues = con.execute("SELECT COUNT(*) FROM pagos_x_asesor").fetchone()[0]
+    log.info("pagos_x_asesor: %d filas nuevas, %d filas totales", despues - antes, despues)
+    return despues - antes
 
 def insertar_registros_safe(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     """INSERT OR IGNORE usando executemany para respetar UNIQUE en llave_hash."""
@@ -377,10 +541,24 @@ def ejecutar_etl(
         resumen["advertencia"] = f"No encontradas: {', '.join(carpetas_no_encontradas)}"
     return resumen
 
+def ejecutar_etl_pagos(carpeta_pagos: str, archivo_consolidado: str, db_path: str = DEFAULT_DB) -> dict:
+    con = inicializar_db(db_path)
+    catalogo = cargar_catalogo(Path(DEFAULT_CATALOG))
+
+    df_unificado = leer_carpeta_pagos(carpeta_pagos)
+    if df_unificado.empty:
+        con.close()
+        return {"error": "No se encontraron archivos en la carpeta de pagos"}
+
+    df_consolidado = cargar_consolidado_pagos(archivo_consolidado)
+    df_final = transformar_pagos_x_asesor(df_unificado, catalogo, df_consolidado)
+    nuevas = insertar_pagos_x_asesor(con, df_final)
+    con.close()
+    return {"filas_procesadas": len(df_final), "filas_nuevas_o_actualizadas": nuevas}
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="ETL incremental de gestiones a SQLite")
-    parser.add_argument("--carpeta", default=DEFAULT_CARPETA)
+    parser.add_argument("--carpeta", default=DEFAULT_CARPETAS)
     parser.add_argument("--db", default=DEFAULT_DB)
     parser.add_argument(
         "--forzar",
@@ -396,6 +574,12 @@ def main() -> int:
         forzar=args.forzar,
         verbose=args.verbose,
     )
+    resultado = ejecutar_etl_pagos(
+    carpeta_pagos=r"C:\Users\elite\OneDrive\Desktop\Pagos - Productividad",
+    archivo_consolidado=r"C:\Users\elite\OneDrive\Desktop\Claro\4.Pagos\Consolidado de pagos Claro.xlsx",
+    )
+    print(resultado)
+
     if "error" in res:
         return 1
 
