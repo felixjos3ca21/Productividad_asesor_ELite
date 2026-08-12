@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+import plotly.express as px
 from scripts.actualizar_archivo import render_actualizar_pagos_sidebar
 
 
@@ -136,8 +137,37 @@ resumen_asesor = (
 )
 
 st.subheader("Resumen por asesor")
-st.dataframe(resumen_asesor, use_container_width=True)
-st.bar_chart(resumen_asesor.set_index("Nombre_Asesor")["total_pagado"])
+st.dataframe(
+    resumen_asesor,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "total_pagado": st.column_config.NumberColumn("Total pagado", format="$ %d"),
+        "cantidad_pagos": st.column_config.NumberColumn("Cantidad de pagos", format="%d"),
+    },
+)
+st.divider()
+
+## GRAFICO DE PAGOS POR DIA
+
+st.subheader("Pagos por día")
+
+base["dia_pago"] = base["fecha_pago"].dt.day
+pagos_diarios = (
+    base.groupby(["dia_pago", "Campo"], as_index=False)
+    .agg(total_dia=("valor_pago", "sum"))
+)
+
+fig = px.line(
+    pagos_diarios,   # ← cambia resumen_asesor por pagos_diarios aquí
+    x="dia_pago",
+    y="total_dia",
+    color="Campo",
+    markers=True,
+    labels={"dia_pago": "Día", "total_dia": "Total pagado", "Campo": "Campo"},
+)
+fig.update_layout(hovermode="x unified")
+st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("### Meta por asesor")
 meta = st.number_input(
