@@ -186,16 +186,78 @@ resumen_asesor["%_meta"] = resumen_asesor.apply(
     axis=1,
 )
 
-resumen_mostrar = resumen_asesor.drop(columns=["cantidad_pagos", "Campo"]).copy()
+from st_aggrid import AgGrid, JsCode
 
-resumen_mostrar["total_pagado"] = resumen_mostrar["total_pagado"].map(lambda v: f"${v:,.0f}".replace(",", "."))
-resumen_mostrar["meta"] = resumen_mostrar["meta"].map(lambda v: f"${v:,.0f}".replace(",", "."))
-resumen_mostrar["valor_faltante"] = resumen_mostrar["valor_faltante"].map(lambda v: f"${v:,.0f}".replace(",", "."))
-resumen_mostrar["%_meta"] = resumen_mostrar["%_meta"].map(lambda v: f"{v:.1f}%")
+resumen_asesor["estado"] = resumen_asesor["valor_faltante"].apply(lambda v: "✅ Cumplida" if v >= 0 else "⏳ En curso")
 
 marcas_texto = ", ".join(marcas_sel) if marcas_sel else "Todas"
 campos_texto = ", ".join(campos_sel) if campos_sel else "Todos"
-
 st.subheader(f"Resumen por asesor — Marca: {marcas_texto} | Campo: {campos_texto}")
-st.dataframe(resumen_mostrar, use_container_width=True, hide_index=True)
+
+df_grid = resumen_asesor[
+    ["Nombre_Asesor", "total_pagado", "meta", "valor_faltante", "%_meta", "estado"]
+].copy()
+
+money_formatter = JsCode("""
+function(params) {
+    if (params.value == null) return '';
+    return '$ ' + Math.round(params.value).toLocaleString('es-CO');
+}
+""")
+
+progress_renderer = JsCode("""
+class ProgressBarRenderer {
+    init(params) {
+        this.eGui = document.createElement('div');
+        const real = params.value == null ? 0 : params.value;
+        const ancho = Math.min(Math.max(real, 0), 100);
+        const color = real >= 100 ? '#2ecc71' : '#3498db';
+        this.eGui.innerHTML = `
+            <div style="background:#e2e8f0;border-radius:4px;height:18px;width:100%;position:relative;">
+                <div style="background:${color};width:${ancho}%;height:100%;border-radius:4px;"></div>
+                <span style="position:absolute;inset:0;text-align:center;font-size:11px;line-height:18px;">${real.toFixed(0)}%</span>
+            </div>`;
+    }
+    getGui() { return this.eGui; }
+}
+""")
+
+grid_options = {
+    "defaultColDef": {
+        "sortable": True,
+        "filter": True,
+        "resizable": True,
+    },
+    "columnDefs": [
+        {"field": "Nombre_Asesor", "headerName": "Asesor", "pinned": "left"},
+        {"field": "total_pagado", "headerName": "Total pagado", "valueFormatter": money_formatter, "type": ["numericColumn"]},
+        {"field": "meta", "headerName": "Meta", "valueFormatter": money_formatter, "type": ["numericColumn"]},
+        {"field": "valor_faltante", "headerName": "Falta / Excedente", "valueFormatter": money_formatter, "type": ["numericColumn"]},
+        {"field": "%_meta", "headerName": "Avance", "cellRenderer": progress_renderer, "type": ["numericColumn"]},
+        {"field": "estado", "headerName": "Estado"},
+    ],
+}
+custom_css = {
+    ".ag-header": {"background-color": "#1f3b57 !important"},
+    ".ag-header-cell-label": {"color": "white !important", "font-weight": "600"},
+    ".ag-row-even": {"background-color": "#ffffff !important"},
+    ".ag-row-odd": {"background-color": "#f2f5f8 !important"},
+}
+
+altura_fila = 42
+altura_header = 46
+altura_calculada = altura_header + altura_fila * len(df_grid) + 10
+altura_calculada = min(altura_calculada, 900)  # tope para que no se salga de pantalla con muchas filas
+
+AgGrid(
+    df_grid,
+    gridOptions=grid_options,
+    custom_css=custom_css,
+    allow_unsafe_jscode=True,
+    fit_columns_on_grid_load=True,
+    theme="alpine",
+    height=altura_calculada,   # ← número fijo, calculado según tus filas reales
+    update_mode="NO_UPDATE",
+)
+st.caption(f"Filas en df_grid: {len(df_grid)}")
 
