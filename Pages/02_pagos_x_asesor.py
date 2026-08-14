@@ -194,8 +194,11 @@ marcas_texto = ", ".join(marcas_sel) if marcas_sel else "Todas"
 campos_texto = ", ".join(campos_sel) if campos_sel else "Todos"
 st.subheader(f"Resumen por asesor — Marca: {marcas_texto} | Campo: {campos_texto}")
 
+
+resumen_asesor = resumen_asesor.sort_values("total_pagado", ascending=False).reset_index(drop=True)
+resumen_asesor["posicion"] = resumen_asesor.index + 1
 df_grid = resumen_asesor[
-    ["Nombre_Asesor", "total_pagado", "meta", "valor_faltante", "%_meta", "estado"]
+    ["posicion", "Nombre_Asesor", "total_pagado", "meta", "valor_faltante", "%_meta", "estado"]
 ].copy()
 
 money_formatter = JsCode("""
@@ -229,6 +232,7 @@ grid_options = {
         "resizable": True,
     },
     "columnDefs": [
+        {"field": "posicion", "headerName": "Posición", "pinned": "left"},
         {"field": "Nombre_Asesor", "headerName": "Asesor", "pinned": "left"},
         {"field": "total_pagado", "headerName": "Total pagado", "valueFormatter": money_formatter, "type": ["numericColumn"]},
         {"field": "meta", "headerName": "Meta", "valueFormatter": money_formatter, "type": ["numericColumn"]},
@@ -261,3 +265,33 @@ AgGrid(
 )
 st.caption(f"Filas en df_grid: {len(df_grid)}")
 
+st.divider()
+
+with st.expander("🔍 Ver detalle de pagos (cuenta, asesor, día, valor, campo, marca)"):
+    detalle = base[[
+        "cuenta", "Nombre_Asesor", "fecha_pago", "valor_pago", "Campo", "marca", "mejorperfil"
+    ]].sort_values("fecha_pago", ascending=False).copy()
+
+    st.dataframe(
+        detalle,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "cuenta": st.column_config.TextColumn("Cuenta"),
+            "Nombre_Asesor": st.column_config.TextColumn("Asesor"),
+            "fecha_pago": st.column_config.DateColumn("Fecha de pago", format="DD/MM/YYYY"),
+            "valor_pago": st.column_config.NumberColumn("Valor pagado", format="$ %d"),
+            "Campo": st.column_config.TextColumn("Campo"),
+            "marca": st.column_config.TextColumn("Marca"),
+            "mejorperfil": st.column_config.TextColumn("Mejor Perfil"),
+        },
+    )
+    csv_bytes = detalle.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        label="⬇️ Descargar detalle en CSV",
+        data=csv_bytes,
+        file_name=f"detalle_pagos_asesor_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        key="btn_descargar_detalle_pagos",
+    )
+    st.caption(f"{len(detalle):,} pagos individuales bajo los filtros actuales".replace(",", "."))
