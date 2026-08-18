@@ -1,3 +1,4 @@
+import base64
 import sqlite3
 from pathlib import Path
 import pandas as pd
@@ -71,9 +72,9 @@ with col_f1:
         key="filtro_fecha_pago",
     )
 
-campos_disponibles = sorted(df_pagos["Campo"].dropna().unique().tolist())
+types_disponibles = sorted(df_pagos["customer_type"].dropna().unique().tolist()) if "customer_type" in df_pagos.columns else []
 with col_f2:
-    campos_sel = st.multiselect("Campo", campos_disponibles, default=campos_disponibles, key="filtro_campo")
+    types_sel = st.multiselect("Tipo de Cliente", types_disponibles, default=types_disponibles, key="filtro_customer_type")
 
 marcas_disponibles = sorted(df_pagos["marca"].dropna().unique().tolist())
 with col_f3:
@@ -93,8 +94,9 @@ base = df_pagos.copy()
 if isinstance(rango_fecha, tuple) and len(rango_fecha) == 2:
     f_desde, f_hasta = pd.to_datetime(rango_fecha[0]), pd.to_datetime(rango_fecha[1])
     base = base[(base["fecha_pago"] >= f_desde) & (base["fecha_pago"] <= f_hasta)]
-if campos_sel:
-    base = base[base["Campo"].isin(campos_sel)]
+
+if types_sel and "customer_type" in base.columns:
+    base = base[base["customer_type"].isin(types_sel)]
 
 if marcas_sel:
     base = base[base["marca"].isin(marcas_sel)]
@@ -153,18 +155,19 @@ st.divider()
 st.subheader("Pagos por día")
 
 base["dia_pago"] = base["fecha_pago"].dt.day
+col_color = "customer_type" if "customer_type" in base.columns else "Nombre_Asesor"
 pagos_diarios = (
-    base.groupby(["dia_pago", "Campo"], as_index=False)
+    base.groupby(["dia_pago", col_color], as_index=False)
     .agg(total_dia=("valor_pago", "sum"))
 )
 
 fig = px.line(
-    pagos_diarios,   # ← cambia resumen_asesor por pagos_diarios aquí
+    pagos_diarios,
     x="dia_pago",
     y="total_dia",
-    color="Campo",
+    color=col_color,
     markers=True,
-    labels={"dia_pago": "Día", "total_dia": "Total pagado", "Campo": "Campo"},
+    labels={"dia_pago": "Día", "total_dia": "Total pagado", col_color: "Tipo de Cliente"},
 )
 fig.update_layout(hovermode="x unified")
 st.plotly_chart(fig, use_container_width=True)
@@ -191,8 +194,8 @@ from st_aggrid import AgGrid, JsCode
 resumen_asesor["estado"] = resumen_asesor["valor_faltante"].apply(lambda v: "✅ Cumplida" if v >= 0 else "⏳ En curso")
 
 marcas_texto = ", ".join(marcas_sel) if marcas_sel else "Todas"
-campos_texto = ", ".join(campos_sel) if campos_sel else "Todos"
-st.subheader(f"Resumen por asesor — Marca: {marcas_texto} | Campo: {campos_texto}")
+types_texto = ", ".join(types_sel) if types_sel else "Todos"
+st.subheader(f"Resumen por asesor — Marca: {marcas_texto} | Tipo de Cliente: {types_texto}")
 
 
 resumen_asesor = resumen_asesor.sort_values("total_pagado", ascending=False).reset_index(drop=True)
@@ -241,11 +244,13 @@ grid_options = {
         {"field": "estado", "headerName": "Estado"},
     ],
 }
+
+
 custom_css = {
     ".ag-header": {"background-color": "#1f3b57 !important"},
     ".ag-header-cell-label": {"color": "white !important", "font-weight": "600"},
-    ".ag-row-even": {"background-color": "#ffffff !important"},
-    ".ag-row-odd": {"background-color": "#f2f5f8 !important"},
+    ".ag-row-even": {"background-color": "rgba(255,255,255,0.85) !important"},
+    ".ag-row-odd": {"background-color": "rgba(242,245,248,0.85) !important"},
 }
 
 altura_fila = 42
@@ -262,15 +267,16 @@ AgGrid(
     theme="alpine",
     height=altura_calculada,   # ← número fijo, calculado según tus filas reales
     update_mode="NO_UPDATE",
+    key="grid_resumen_asesor_watermark_v2",
 )
 st.caption(f"Filas en df_grid: {len(df_grid)}")
 
 st.divider()
 
-with st.expander("🔍 Ver detalle de pagos (cuenta, asesor, día, valor, campo, marca)"):
-    detalle = base[[
-        "cuenta", "Nombre_Asesor", "fecha_pago", "valor_pago", "Campo", "marca", "mejorperfil"
-    ]].sort_values("fecha_pago", ascending=False).copy()
+with st.expander("🔍 Ver detalle de pagos (cuenta, asesor, día, valor, campo, marca, tipo de cliente)"):
+    cols_det = ["cuenta", "Nombre_Asesor", "fecha_pago", "valor_pago", "Campo", "marca", "customer_type", "mejorperfil"]
+    cols_det = [c for c in cols_det if c in base.columns]
+    detalle = base[cols_det].sort_values("fecha_pago", ascending=False).copy()
 
     st.dataframe(
         detalle,
@@ -283,6 +289,7 @@ with st.expander("🔍 Ver detalle de pagos (cuenta, asesor, día, valor, campo,
             "valor_pago": st.column_config.NumberColumn("Valor pagado", format="$ %d"),
             "Campo": st.column_config.TextColumn("Campo"),
             "marca": st.column_config.TextColumn("Marca"),
+            "customer_type": st.column_config.TextColumn("Tipo de Cliente"),
             "mejorperfil": st.column_config.TextColumn("Mejor Perfil"),
         },
     )

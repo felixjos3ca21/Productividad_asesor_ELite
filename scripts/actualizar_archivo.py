@@ -125,7 +125,7 @@ from scripts.catalogo_asesores import cargar_catalogo
 CAMPOS_CLAVE_PAGOS = {
     "cuenta": ["cuenta", "Cuenta"],
     "usuario_mejor_gestion": ["usuario_mejor_gestion"],
-    "customer_type_id": ["customer_type_id"],
+    "customer_type_id": ["customer_type_id", "customer_type", "Customer_Type_Id"],
     "fecha_asignacion": ["fecha_asignacion"],
     "fechagestion": ["fechagestion", "fecha_gestion", "Fecha"],
 }

@@ -207,7 +207,8 @@ def transformar_df(df_raw: pd.DataFrame, origen: str) -> pd.DataFrame:
     out["Tiempo_Llamada"]  = a_hora_hhmmss(df[col_tl]) if col_tl else pd.NA
     out["ultimo_perfil_cliente"] = df[col_perfil].astype("string").str.strip().str.lower() if col_perfil else pd.NA
     out["valorpromesa"] = pd.to_numeric(df[col_valor], errors="coerce") if col_valor else pd.NA
-    out["Marca"] = df[col_marca].astype("string").str.strip() if col_marca else pd.NA
+    out["Marca"] = (df[col_marca].astype("string").replace({"0": "CERO", "0_v": "CERO"}).str.strip().str.upper()
+                    if col_marca else pd.NA)
     out["CRM"]   = df[col_crm].astype("string").str.strip() if col_crm else pd.NA
     out["origen_archivo"] = origen
 
@@ -331,11 +332,23 @@ def transformar_pagos_x_asesor(
     df["valor_pago"] = df["valor_pago"].fillna(df["PAGO"])
     df["fecha_pago"] = df["fecha_pago"].fillna(df["FECHA"])
     df.drop(columns=["PAGO", "FECHA", "CUENTA"], inplace=True, errors="ignore")
-    df["fecha_asignacion"] = pd.to_datetime(df["fecha_asignacion"], errors="coerce").dt.strftime("%Y-%m-%d")
-    df["marca"] = df["marca"].replace({"0": "CERO", "0_v": "CERO"}).str.strip().str.upper()
-    df["customer_type"] = df["customer_type_id"].apply(
-        lambda x: "SGA" if str(x).strip() in SGA_CODIGOS else "Masivo"
-    )
+    col_marca = _primera_ci(df, ["marca", "Marca"])
+    if col_marca:
+        df["marca"] = df[col_marca].astype("string").replace({"0": "CERO", "0_v": "CERO"}).str.strip().str.upper()
+    else:
+        df["marca"] = None
+
+    col_customer = _primera_ci(df, ["customer_type_id", "customer_type", "Customer_Type_Id"])
+    if col_customer:
+        def clasificar_sga(val):
+            if pd.isna(val):
+                return "Masivo"
+            val_str = str(val).split(".")[0].strip()
+            return "SGA" if val_str in SGA_CODIGOS else "Masivo"
+
+        df["customer_type"] = df[col_customer].apply(clasificar_sga)
+    else:
+        df["customer_type"] = "Masivo"
 
     df = df[df["valor_pago"].notna()].copy()
 
