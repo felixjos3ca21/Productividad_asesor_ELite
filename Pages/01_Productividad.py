@@ -7,6 +7,8 @@ import pandas as pd
 import streamlit as st
 from scripts.actualizar_archivo import render_actualizar_archivo_sidebar
 from scripts.importar_gestiones import DEFAULT_CARPETAS, ejecutar_etl	
+import plotly.graph_objects as go
+import numpy as np
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -559,6 +561,272 @@ def _render_matriz_html(df: pd.DataFrame) -> str:
 		'</div>'
 	)
 
+def construir_matriz_horaria_acuerdos(base_filtrada: pd.DataFrame) -> pd.DataFrame:
+	base = base_filtrada.copy()
+	base["Cuenta"] = base["Cuenta"].astype("string").str.strip()
+	base.loc[base["Cuenta"].isin(["", "<NA>", "nan", "None"]), "Cuenta"] = pd.NA
+	base["Fecha"] = pd.to_datetime(base["Fecha"], errors="coerce").dt.date
+
+	perfiles_promesas = {"promesa de pago", "promesa de pago con descuento", "promesa con tercero"}
+
+	if "ultimo_perfil_cliente" not in base.columns:
+		return pd.DataFrame(columns=["Fecha", "hora_bin", "cantidad_acuerdos", "valor_acuerdos"])
+
+	perfil_norm = base["ultimo_perfil_cliente"].astype("string").str.strip().str.lower()
+	mask_promesas = perfil_norm.isin(perfiles_promesas)
+
+	base["hora_bin"] = pd.to_timedelta(base["Hora"], errors="coerce").dt.components["hours"]
+	base = base[base["hora_bin"].between(8, 17)]
+
+	col_valorpromesa = "valorpromesa" if "valorpromesa" in base.columns else "valor_promesa" if "valor_promesa" in base.columns else None
+
+	base_promesas = base.loc[mask_promesas].dropna(subset=["Cuenta", "Fecha"]).copy()
+
+	cantidad = (
+		base_promesas.groupby(["Fecha", "hora_bin"], dropna=False)["Cuenta"]
+		.nunique()
+		.reset_index(name="cantidad_acuerdos")
+	)
+
+	if col_valorpromesa:
+		base_promesas[col_valorpromesa] = pd.to_numeric(base_promesas[col_valorpromesa], errors="coerce")
+		base_con_valor = base_promesas.dropna(subset=[col_valorpromesa])
+		if not base_con_valor.empty:
+			idx_min = base_con_valor.groupby(["Cuenta", "Fecha"])[col_valorpromesa].idxmin()
+			filas_min = base_con_valor.loc[idx_min]
+			valor = (
+				filas_min.groupby(["Fecha", "hora_bin"], dropna=False)[col_valorpromesa]
+				.sum(min_count=1)
+				.reset_index(name="valor_acuerdos")
+			)
+		else:
+			valor = pd.DataFrame(columns=["Fecha", "hora_bin", "valor_acuerdos"])
+	else:
+		valor = pd.DataFrame(columns=["Fecha", "hora_bin", "valor_acuerdos"])
+
+	matriz = cantidad.merge(valor, on=["Fecha", "hora_bin"], how="outer").fillna(0)
+	matriz["hora_bin"] = matriz["hora_bin"].astype(int)
+	matriz["cantidad_acuerdos"] = matriz["cantidad_acuerdos"].astype(int)
+	return matriz
+
+
+
+
+
+
+def graficar_heatmap_acuerdos(matriz: pd.DataFrame):
+	if matriz.empty:
+		return None
+
+	horas = sorted(matriz["hora_bin"].unique())
+	fechas = sorted(matriz["Fecha"].unique())
+
+	pivot_cantidad = matriz.pivot(index="hora_bin", columns="Fecha", values="cantidad_acuerdos").reindex(index=horas, columns=fechas).fillna(0)
+	pivot_valor = matriz.pivot(index="hora_bin", columns="Fecha", values="valor_acuerdos").reindex(index=horas, columns=fechas).fillna(0)
+
+	etiquetas_hora = [f"{h % 12 if h % 12 != 0 else 12}:00 {'AM' if h < 12 else 'PM'}" for h in horas]
+
+	valores_cantidad = pivot_cantidad.values.astype(float)
+	max_por_dia = valores_cantidad.max(axis=0)
+	max_por_dia_seguro = np.where(max_por_dia == 0, 1, max_por_dia)
+	z_normalizado = valores_cantidad / max_por_dia_seguro
+
+	customdata = np.dstack([valores_cantidad, pivot_valor.values])
+
+	fig = go.Figure(
+		data=go.Heatmap(
+			z=z_normalizado,
+			x=[str(f) for f in fechas],
+			y=etiquetas_hora,
+			customdata=customdata,
+			colorscale="Blues",
+			zmin=0,
+			zmax=1,
+			hovertemplate="Fecha: %{x}<br>Hora: %{y}<br>Acuerdos: %{customdata[0]:.0f}<br>Valor: $%{customdata[1]:,.0f}<extra></extra>",
+			colorbar=dict(title="Concentración<br>(relativa al día)"),
+		)
+	)
+	fig.update_layout(
+		height=450,
+		xaxis_title="Fecha",
+		yaxis_title="Hora del día",
+		xaxis=dict(tickangle=-45, type="category"),
+		yaxis=dict(autorange="reversed"),
+		margin=dict(l=60, r=20, t=30, b=80),
+	)
+	return fig
+
+
+def construir_matriz_horaria_contactabilidad(base_filtrada: pd.DataFrame) -> pd.DataFrame:
+	base = base_filtrada.copy()
+	base["Cuenta"] = base["Cuenta"].astype("string").str.strip()
+	base.loc[base["Cuenta"].isin(["", "<NA>", "nan", "None"]), "Cuenta"] = pd.NA
+	base["Fecha"] = pd.to_datetime(base["Fecha"], errors="coerce").dt.date
+ 
+	perfiles_contacto_directo = {
+		"pago parcial", "contesta y cuelga", "ya pago", "promesa de pago", "renuente", "llamar luego",
+		"no hubo acuerdo", "colgo", "voluntad de pago", "promesa de pago con descuento",
+		"no es el encargado del pago", "promesa con tercero", "dificultad de pago", "pago no abonado",
+		"reclamacion", "recordatorio", "encargado renuente", "promesa whatsapp", "abono", "al dia",
+	}
+ 
+	if "ultimo_perfil_cliente" not in base.columns:
+		return pd.DataFrame(columns=["Fecha", "hora_bin", "gestiones_hora", "contactos_hora", "pct_contactabilidad"])
+ 
+	perfil_norm = base["ultimo_perfil_cliente"].astype("string").str.strip().str.lower()
+	mask_directo = perfil_norm.isin(perfiles_contacto_directo)
+ 
+	base["hora_bin"] = pd.to_timedelta(base["Hora"], errors="coerce").dt.components["hours"]
+	base = base[base["hora_bin"].between(8, 17)]
+	base_valida = base.dropna(subset=["Cuenta", "Fecha"])
+ 
+	gestiones = (
+		base_valida.groupby(["Fecha", "hora_bin"], dropna=False)["Cuenta"]
+		.nunique()
+		.reset_index(name="gestiones_hora")
+	)
+	contactos = (
+		base_valida.loc[mask_directo]
+		.groupby(["Fecha", "hora_bin"], dropna=False)["Cuenta"]
+		.nunique()
+		.reset_index(name="contactos_hora")
+	)
+ 
+	matriz = gestiones.merge(contactos, on=["Fecha", "hora_bin"], how="left").fillna(0)
+	matriz["gestiones_hora"] = matriz["gestiones_hora"].astype(int)
+	matriz["contactos_hora"] = matriz["contactos_hora"].astype(int)
+	matriz["pct_contactabilidad"] = (matriz["contactos_hora"] / matriz["gestiones_hora"].replace(0, pd.NA) * 100).fillna(0)
+	return matriz
+
+
+def graficar_heatmap_contactabilidad(matriz: pd.DataFrame):
+	if matriz.empty:
+		return None
+ 
+	horas = sorted(matriz["hora_bin"].unique())
+	fechas = sorted(matriz["Fecha"].unique())
+ 
+	pivot_pct = matriz.pivot(index="hora_bin", columns="Fecha", values="pct_contactabilidad").reindex(index=horas, columns=fechas).fillna(0)
+	pivot_gestiones = matriz.pivot(index="hora_bin", columns="Fecha", values="gestiones_hora").reindex(index=horas, columns=fechas).fillna(0)
+ 
+	etiquetas_hora = [f"{h % 12 if h % 12 != 0 else 12}:00 {'AM' if h < 12 else 'PM'}" for h in horas]
+ 
+	fig = go.Figure(
+		data=go.Heatmap(
+			z=pivot_pct.values,
+			x=[str(f) for f in fechas],
+			y=etiquetas_hora,
+			customdata=pivot_gestiones.values,
+			colorscale="Greens",
+			zmin=0,
+			zmax=100,
+			hovertemplate="Fecha: %{x}<br>Hora: %{y}<br>Contactabilidad: %{z:.1f}%<br>Gestiones: %{customdata:.0f}<extra></extra>",
+			colorbar=dict(title="% Contacto"),
+		)
+	)
+	fig.update_layout(
+		height=450,
+		xaxis_title="Fecha",
+		yaxis_title="Hora del día",
+		yaxis=dict(autorange="reversed"),
+		xaxis=dict(tickangle=-45, type="category"),
+		margin=dict(l=60, r=20, t=30, b=80),
+	)
+	return fig
+
+
+def construir_resumen_diario_mes(matriz_horaria_acuerdos: pd.DataFrame) -> pd.DataFrame:
+	if matriz_horaria_acuerdos.empty:
+		return pd.DataFrame(columns=["Fecha", "cantidad_acuerdos", "valor_acuerdos"])
+	resumen = (
+		matriz_horaria_acuerdos.groupby("Fecha", dropna=False)[["cantidad_acuerdos", "valor_acuerdos"]]
+		.sum()
+		.reset_index()
+		.sort_values("Fecha")
+	)
+	return resumen
+ 
+ 
+def graficar_combo_mensual(resumen_diario: pd.DataFrame):
+	if resumen_diario.empty:
+		return None
+ 
+	fechas = pd.to_datetime(resumen_diario["Fecha"]).dt.strftime("%Y-%m-%d").tolist()
+ 
+	fig = go.Figure()
+	fig.add_trace(
+		go.Bar(
+			x=fechas,
+			y=resumen_diario["cantidad_acuerdos"],
+			name="Cantidad de acuerdos",
+			yaxis="y1",
+			marker_color="#4C78A8",
+		)
+	)
+	fig.add_trace(
+		go.Scatter(
+			x=fechas,
+			y=resumen_diario["valor_acuerdos"],
+			name="Valor de acuerdos",
+			yaxis="y2",
+			mode="lines+markers",
+			line=dict(color="#E45756"),
+		)
+	)
+	fig.update_layout(
+		height=450,
+		xaxis=dict(title="Fecha", tickangle=-45, type="category"),
+		yaxis=dict(title="Cantidad de acuerdos"),
+		yaxis2=dict(title="Valor de acuerdos", overlaying="y", side="right"),
+		legend=dict(orientation="h", y=1.1),
+		margin=dict(l=60, r=60, t=40, b=80),
+	)
+	return fig
+
+def construir_resumen_mensual_promesa(base_filtrada: pd.DataFrame) -> pd.DataFrame:
+	base = base_filtrada.copy()
+	base["Cuenta"] = base["Cuenta"].astype("string").str.strip()
+	base.loc[base["Cuenta"].isin(["", "<NA>", "nan", "None"]), "Cuenta"] = pd.NA
+ 
+	perfiles_promesas = {"promesa de pago", "promesa de pago con descuento", "promesa con tercero"}
+ 
+	if "ultimo_perfil_cliente" not in base.columns or "FechaPromesa" not in base.columns:
+		return pd.DataFrame(columns=["Fecha", "cantidad_acuerdos", "valor_acuerdos"])
+ 
+	perfil_norm = base["ultimo_perfil_cliente"].astype("string").str.strip().str.lower()
+	mask_promesas = perfil_norm.isin(perfiles_promesas)
+ 
+	col_valorpromesa = "valorpromesa" if "valorpromesa" in base.columns else "valor_promesa" if "valor_promesa" in base.columns else None
+ 
+	base_promesas = base.loc[mask_promesas].dropna(subset=["Cuenta", "FechaPromesa"]).copy()
+ 
+	cantidad = (
+		base_promesas.groupby("FechaPromesa", dropna=False)["Cuenta"]
+		.nunique()
+		.reset_index(name="cantidad_acuerdos")
+	)
+ 
+	if col_valorpromesa:
+		base_promesas[col_valorpromesa] = pd.to_numeric(base_promesas[col_valorpromesa], errors="coerce")
+		base_con_valor = base_promesas.dropna(subset=[col_valorpromesa])
+		if not base_con_valor.empty:
+			idx_min = base_con_valor.groupby(["Cuenta", "FechaPromesa"])[col_valorpromesa].idxmin()
+			filas_min = base_con_valor.loc[idx_min]
+			valor = (
+				filas_min.groupby("FechaPromesa", dropna=False)[col_valorpromesa]
+				.sum(min_count=1)
+				.reset_index(name="valor_acuerdos")
+			)
+		else:
+			valor = pd.DataFrame(columns=["FechaPromesa", "valor_acuerdos"])
+	else:
+		valor = pd.DataFrame(columns=["FechaPromesa", "valor_acuerdos"])
+ 
+	resumen = cantidad.merge(valor, on="FechaPromesa", how="outer").fillna(0)
+	resumen["cantidad_acuerdos"] = resumen["cantidad_acuerdos"].astype(int)
+	resumen = resumen.rename(columns={"FechaPromesa": "Fecha"}).sort_values("Fecha")
+	return resumen
+
 
 # ── Sección de Actualización de Datos (Mantenida en Sidebar) ──────────────
 with st.sidebar.expander("🔄 Actualizar desde Carpeta Local", expanded=False):
@@ -887,4 +1155,35 @@ if lista_resumenes_diarios:
 		key="btn_descargar_diario",
 	)
 
+st.divider()
+st.markdown("<h3 style='text-align: center; margin-top: 20px; margin-bottom: 15px;'>🕒 Concentración Horaria de Acuerdos y Contactabilidad</h3>", unsafe_allow_html=True)
 
+matriz_horaria_acuerdos = construir_matriz_horaria_acuerdos(base)
+matriz_horaria_contacto = construir_matriz_horaria_contactabilidad(base)
+
+col_hm1, col_hm2 = st.columns(2)
+with col_hm1:
+	st.markdown("**Acuerdos por hora del día**")
+	fig_acuerdos = graficar_heatmap_acuerdos(matriz_horaria_acuerdos)
+	if fig_acuerdos is not None:
+		st.plotly_chart(fig_acuerdos, use_container_width=True)
+	else:
+		st.info("No hay acuerdos para los filtros seleccionados.")
+
+with col_hm2:
+	st.markdown("**Contactabilidad por hora del día**")
+	fig_contacto = graficar_heatmap_contactabilidad(matriz_horaria_contacto)
+	if fig_contacto is not None:
+		st.plotly_chart(fig_contacto, use_container_width=True)
+	else:
+		st.info("No hay gestiones para los filtros seleccionados.")
+
+st.divider()
+st.markdown("<h3 style='text-align: center; margin-top: 20px; margin-bottom: 15px;'>📈 Comportamiento Mensual de Acuerdos</h3>", unsafe_allow_html=True)
+
+resumen_diario_mes = construir_resumen_mensual_promesa(base)
+fig_mensual = graficar_combo_mensual(resumen_diario_mes)
+if fig_mensual is not None:
+	st.plotly_chart(fig_mensual, use_container_width=True)
+else:
+	st.info("No hay acuerdos para los filtros seleccionados.")
