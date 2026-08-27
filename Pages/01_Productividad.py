@@ -838,7 +838,7 @@ with st.sidebar.expander("🔄 Actualizar desde Carpeta Local", expanded=False):
     )
     carpetas_lista = [c.strip() for c in carpetas_texto.splitlines() if c.strip()]
     forzar_reimport = st.checkbox("Reimportar todo", value=False, key="chk_forzar_etl")
-    if st.button("Recargar Gestiones", key="btn_recargar_db", use_container_width=True):
+    if st.button("Recargar Gestiones", key="btn_recargar_db", width="stretch"):
         with st.spinner("Procesando e importando gestiones..."):
             res_etl = ejecutar_etl(carpeta_path=carpetas_lista, db_path=_DB_PATH, forzar=forzar_reimport)
             st.cache_data.clear()
@@ -1166,7 +1166,7 @@ with col_hm1:
 	st.markdown("**Acuerdos por hora del día**")
 	fig_acuerdos = graficar_heatmap_acuerdos(matriz_horaria_acuerdos)
 	if fig_acuerdos is not None:
-		st.plotly_chart(fig_acuerdos, use_container_width=True)
+		st.plotly_chart(fig_acuerdos, width="stretch")
 	else:
 		st.info("No hay acuerdos para los filtros seleccionados.")
 
@@ -1174,7 +1174,7 @@ with col_hm2:
 	st.markdown("**Contactabilidad por hora del día**")
 	fig_contacto = graficar_heatmap_contactabilidad(matriz_horaria_contacto)
 	if fig_contacto is not None:
-		st.plotly_chart(fig_contacto, use_container_width=True)
+		st.plotly_chart(fig_contacto, width="stretch")
 	else:
 		st.info("No hay gestiones para los filtros seleccionados.")
 
@@ -1184,6 +1184,6 @@ st.markdown("<h3 style='text-align: center; margin-top: 20px; margin-bottom: 15p
 resumen_diario_mes = construir_resumen_mensual_promesa(base)
 fig_mensual = graficar_combo_mensual(resumen_diario_mes)
 if fig_mensual is not None:
-	st.plotly_chart(fig_mensual, use_container_width=True)
+	st.plotly_chart(fig_mensual, width="stretch")
 else:
 	st.info("No hay acuerdos para los filtros seleccionados.")

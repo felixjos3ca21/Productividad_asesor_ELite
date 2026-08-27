@@ -141,7 +141,7 @@ resumen_asesor = (
 st.subheader("Resumen por asesor")
 st.dataframe(
     resumen_asesor,
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
     column_config={
         "total_pagado": st.column_config.NumberColumn("Total pagado", format="$ %d"),
@@ -170,7 +170,7 @@ fig = px.line(
     labels={"dia_pago": "Día", "total_dia": "Total pagado", col_color: "Tipo de Cliente"},
 )
 fig.update_layout(hovermode="x unified")
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 
 st.markdown("### Meta por asesor")
 meta = st.number_input(
@@ -280,7 +280,7 @@ with st.expander("🔍 Ver detalle de pagos (cuenta, asesor, día, valor, campo,
 
     st.dataframe(
         detalle,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "cuenta": st.column_config.TextColumn("Cuenta"),
