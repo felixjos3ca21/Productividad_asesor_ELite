@@ -10,6 +10,7 @@ venv/
 *.json
 **/*.json
 !productividad_view.json
+*.xls
 
 # Python cache/artifacts
 __pycache__/
