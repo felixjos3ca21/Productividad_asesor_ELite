@@ -6,6 +6,9 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 from scripts.crear_db_baguer import inicializar_base_datos, guardar_df_en_bd, cargar_datos_productividad
 from scripts.procesar_reporte_baguer import procesar_reporte_baguer
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+from scripts.procesar_reporte_baguer import procesar_reporte_baguer
+from scripts.generar_imagen_baguer import generar_imagen_productividad
+import io
 
 _ICON = Path(__file__).parent / "scripts" / "image" / "icono.ico"
 st.set_page_config(page_title="Productividad - BAGUER", layout="wide", page_icon=str(_ICON))
@@ -290,13 +293,13 @@ gb.configure_default_column(
     sortable=True,
     suppressSizeToFit=True 
 )
-gb.configure_column(col_asesor, header_name="Nombre Asesor",width=400)
+gb.configure_column(col_asesor, header_name="Nombre Asesor",width=300)
 gb.configure_column("Cuentas_Gestionadas", header_name="Cuentas Gestionadas", width=180,cellStyle={'textAlign': 'center'})
 gb.configure_column("Cantidad_Promesas", header_name="Cantidad de Promesas", width=200, cellStyle={'textAlign': 'center'})
 gb.configure_column(
     "Valor_Promesas", 
     header_name="Valor de Promesas",
-    width=300,
+    width=200,
     cellStyle=estilo_semaforo,
     valueFormatter=formato_moneda
 )
@@ -323,3 +326,22 @@ with col_centro:
         theme='alpine',                # El tema 'alpine' tiene excelente contraste (filas grises/blancas)
         allow_unsafe_jscode=True,      # OBLIGATORIO: Permite ejecutar el JavaScript del semáforo
     )
+
+st.markdown("---")
+
+imagen_resumen = generar_imagen_productividad(
+    resumen_mostrar,
+    col_asesor,
+    _hora_actualiz,
+)
+
+buffer = io.BytesIO()
+imagen_resumen.save(buffer, format="JPEG", quality=95)
+
+st.image(imagen_resumen, caption="Vista previa de la imagen")
+st.download_button(
+    "📥 Descargar imagen del resumen",
+    data=buffer.getvalue(),
+    file_name=f"productividad_baguer_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.jpg",
+    mime="image/jpeg",
+)
