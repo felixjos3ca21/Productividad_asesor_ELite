@@ -171,6 +171,14 @@ fig = px.line(
 )
 fig.update_layout(hovermode="x unified")
 st.plotly_chart(fig, width="stretch")
+resumen_mes = (
+    base[base["fecha_pago"].dt.month == 8]
+    .groupby(base["fecha_pago"].dt.day)["valor_pago"]
+    .sum()
+    .reset_index()
+)
+st.write(resumen_mes)
+st.write("Total agosto:", resumen_mes["valor_pago"].sum())
 
 st.markdown("### Meta por asesor")
 meta = st.number_input(
