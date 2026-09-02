@@ -6,7 +6,6 @@ import streamlit as st
 import plotly.express as px
 from scripts.actualizar_archivo import render_actualizar_pagos_sidebar
 
-
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DB_PATH = str(_REPO_ROOT / "gestiones.db")
 
@@ -171,6 +170,8 @@ fig = px.line(
 )
 fig.update_layout(hovermode="x unified")
 st.plotly_chart(fig, width="stretch")
+
+
 
 st.markdown("### Meta por asesor")
 meta = st.number_input(
