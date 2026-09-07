@@ -75,43 +75,43 @@ st.markdown(
 	.mat-tbl {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 0.75rem;
+		font-size: 1rem !important;
 		font-family: 'Segoe UI', 'Inter', sans-serif;
 		white-space: nowrap;
 	}
 	.mat-tbl thead tr {
 		background: #121827;
 		color: #f8fafc;
-		font-size: 0.78rem;
+		font-size: 1.05rem !important;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 	}
 	.mat-tbl thead th {
-		padding: 11px 14px;
+		padding: 14px 18px;
 		text-align: center;
 		border-bottom: 2px solid #334155;
 		white-space: pre-line;
 		font-weight: 800;
 		line-height: 1.3;
 	}
-	.mat-tbl thead th:first-child { text-align: left; padding-left: 16px; }
+	.mat-tbl thead th:first-child { text-align: left; padding-left: 20px; }
 	.mat-tbl tbody tr:nth-child(odd)  { background: #19203a; }
 	.mat-tbl tbody tr:nth-child(even) { background: #1e2640; }
 	.mat-tbl tbody tr:hover           { background: #273155; transition: background 0.12s; }
 	.mat-tbl tbody td {
-		padding: 6px 12px;
+		padding: 8px 12px;
 		color: #e2e8f0;
 		font-weight: 600;
-		font-size: 0.76rem;
+		font-size: 1.6rem;
 		text-align: center;
 		border-bottom: 1px solid #242d47;
 	}
 	.mat-tbl tbody td:first-child {
 		text-align: left;
-		padding: 7px 12px 7px 16px;
-		font-weight: 700;
+		padding: 11px 16px 11px 20px;
+		font-weight: 600;
 		color: #f8fafc;
-		font-size: 0.78rem;
+		font-size: 1.7rem;
 		max-width: 220px;
 		white-space: normal;
 	}
@@ -548,10 +548,14 @@ def _render_matriz_html(df: pd.DataFrame) -> str:
 	def _e(s: str) -> str:
 		return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-	encabezados = "".join(f"<th>{_e(c)}</th>" for c in df.columns)
+	encabezados = "".join(
+		f'<th style="font-size:1.05rem !important;">{_e(c)}</th>' for c in df.columns
+	)
 	filas = []
 	for _, row in df.iterrows():
-		celdas = "".join(f"<td>{_e(v)}</td>" for v in row.values)
+		celdas = "".join(
+			f'<td style="font-size:0.95rem !important;">{_e(v)}</td>' for v in row.values
+		)
 		filas.append(f"<tr>{celdas}</tr>")
 	cuerpo = "".join(filas)
 	return (
@@ -1009,15 +1013,25 @@ if not _hora_actualiz:
 
 
 st.divider()
+import base64
 
-col1, col2, col3, col4, col5, col6=st.columns(6)
-with col1:
-	st.image("scripts/image/Elite_H_color.png", width=300)
-with col6:
-	st.image("scripts/image/logo_claro.png", width=200)
+@st.cache_data(show_spinner=False)
+def _imagen_a_base64(ruta: str) -> str:
+	with open(ruta, "rb") as f:
+		return base64.b64encode(f.read()).decode("utf-8")
+
+	
+_logo_elite_b64 = _imagen_a_base64("scripts/image/Elite_H_color.png")
+_logo_claro_b64 = _imagen_a_base64("scripts/image/logo_claro.png")
 
 st.markdown(
-	f"<h3 style='text-align: center; margin-top: 15px; margin-bottom: 15px;'>📊 Productividad x Asesor - Campaña CLARO &nbsp;&nbsp;·&nbsp;&nbsp; Actualizado: {_hora_actualiz}</h3>",
+	f"""
+	<div style='display:flex; align-items:center; justify-content:space-between; margin-top:15px; margin-bottom:15px;'>
+		<img src='data:image/png;base64,{_logo_elite_b64}' style='width:220px; object-fit:contain;'>
+		<h3 style='text-align:center; font-size:3.4rem; margin:0; flex:1;'>📊 Productividad x Asesor - Campaña CLARO &nbsp;&nbsp;·&nbsp;&nbsp; Actualizado: {_hora_actualiz}</h3>
+		<img src='data:image/png;base64,{_logo_claro_b64}' style='width:140px; object-fit:contain;'>
+	</div>
+	""",
 	unsafe_allow_html=True,
 )
 
