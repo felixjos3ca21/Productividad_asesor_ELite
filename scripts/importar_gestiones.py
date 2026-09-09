@@ -105,6 +105,59 @@ CREATE TABLE IF NOT EXISTS archivos_importados (
 );
 """
 
+DDL_MALLA_TURNO = """
+CREATE TABLE IF NOT EXISTS malla_turno (
+    llave_hash          TEXT PRIMARY KEY,
+    Fecha               TEXT,
+    Identificacion      TEXT,
+    asesor_malla        TEXT,
+    usuario_mejor_gestion TEXT,
+    Nombre_Asesor       TEXT,
+    Campo               TEXT,
+    Hora_Entrada        TEXT,
+    Hora_Salida         TEXT,
+    Horas_Programadas_Min REAL,
+    Turno               TEXT,
+    Novedad             TEXT,
+    origen_archivo      TEXT,
+    actualizado_en      TEXT NOT NULL
+);
+"""
+
+DDL_REPORTE_LOGUEO = """
+CREATE TABLE IF NOT EXISTS reporte_logueo (
+    llave_hash          TEXT PRIMARY KEY,
+    Fecha               TEXT,
+    Identificacion      TEXT,
+    usuario_controlnext TEXT,
+    usuario_mejor_gestion TEXT,
+    Nombre_Asesor       TEXT,
+    Campo               TEXT,
+    Extension           TEXT,
+    Primera_Entrada     TEXT,
+    Ultima_Salida       TEXT,
+    Primera_Gestion     TEXT,
+    Ultima_Gestion      TEXT,
+    Tiempo_Real_Linea_Min REAL,
+    Numero_Sesiones     INTEGER,
+    Total_Llamadas      INTEGER,
+    Llamadas_Contestadas INTEGER,
+    Llamadas_No_Contestadas INTEGER,
+    Tiempo_Total_Llamada_Min REAL,
+    Almuerzo_Min        REAL,
+    Bano_Min            REAL,
+    Break10_Min         REAL,
+    Break15_Min         REAL,
+    Capacitacion_Min    REAL,
+    PausasActivas_Min   REAL,
+    Tiempo_Muerto_Min   REAL,
+    origen_archivo      TEXT,
+    actualizado_en      TEXT NOT NULL
+);
+"""
+
+
+
 
 # ── Helpers de lectura ──────────────────────────────────────────────────────
 
@@ -243,6 +296,8 @@ def inicializar_db(db_path: str) -> sqlite3.Connection:
     con.execute(DDL_GESTIONES)
     con.execute(DDL_ARCHIVOS)
     con.execute(DDL_PAGOS_X_ASESOR)
+    con.execute(DDL_MALLA_TURNO)
+    con.execute(DDL_REPORTE_LOGUEO)
     con.commit()
     return con
 

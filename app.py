@@ -12,8 +12,8 @@ st.set_page_config(page_title="Elite Abogados BPO", layout="wide", page_icon=str
 fondo_logo()
 
 pagina_productividad = st.Page(
-    "Pages/01_productividad.py",
-    title="Productividad",
+    "Pages/01_productividad_CLARO.py",
+    title="Productividad CLARO",
     icon=":material/insights:",
     default=True,
 )
@@ -30,27 +30,34 @@ pagina_productividad_baguer = st.Page(
     
 )
 
+pagina_productividad_dupree = st.Page(
+    "Pages/04_productividad_DUPREE.py",
+    title="Productividad DUPREE",
+    icon=":material/insights:", 
+    
+)
+
 navegacion = st.navigation(
     [
         pagina_productividad,
         pagina_pagos_x_asesor,
         pagina_productividad_baguer,
+        pagina_productividad_dupree,
     ]
 )
 
 # 3. Dibujamos los logos condicionalmente según la página activa
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
-    st.image("scripts/image/Elite_H_color.png", width=600)
+    st.image("scripts/image/Elite_H_color.png", width=800)
 
 with col6:
-    # Verificamos si la página actual es la de BAGUER
     if navegacion.title == "Productividad BAGUER":
-        # Asegúrate de colocar el nombre real de tu imagen para Baguer aquí
         st.image("scripts/image/baguer_logo.png", width=200) 
+    elif navegacion.title == "Productividad DUPREE":
+        st.image("scripts/image/dupree_logo.png", width=300)
     else:
-        # Para todas las demás páginas, mostramos el logo de Claro
-        st.image("scripts/image/logo_claro.png", width=200)
+        st.image("scripts/image/logo_claro.png", width=250)
 
 # 4. Finalmente, ejecutamos el contenido de la página seleccionada
 navegacion.run()
