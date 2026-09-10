@@ -27,7 +27,9 @@ from scripts.funciones_apoyo import (
     construir_resumen_mensual_promesa,
     graficar_combo_mensual,
     render_modulo_adherencia,
+    render_modulo_pagos_asesor,
 )
+from scripts.actualizar_archivo import render_actualizar_pagos_sidebar
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DB_PATH = str(_REPO_ROOT / "gestiones.db")
@@ -110,7 +112,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
     if st.button(
         "📊 Productividad",
@@ -129,6 +131,16 @@ with col2:
         key="btn_sec_adh",
     ):
         st.session_state["productividad_seccion"] = "Adherencia"
+        st.rerun()
+
+with col3:
+    if st.button(
+        "💰 Pagos x Asesor",
+        use_container_width=True,
+        type="primary" if seccion == "Pagos x Asesor" else "secondary",
+        key="btn_sec_pagos",
+    ):
+        st.session_state["productividad_seccion"] = "Pagos x Asesor"
         st.rerun()
 
 st.divider()
@@ -197,6 +209,10 @@ if seccion == "Productividad":
 
 elif seccion == "Adherencia":
     render_modulo_adherencia(_DB_PATH, catalogo)
+
+elif seccion == "Pagos x Asesor":
+    render_actualizar_pagos_sidebar(_DB_PATH)
+    render_modulo_pagos_asesor(_DB_PATH)
 
 
 st.markdown(

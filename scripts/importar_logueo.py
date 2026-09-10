@@ -112,8 +112,6 @@ def normalizar_malla(df_raw: pd.DataFrame, catalogo: dict, origen: str = "archiv
             str(row.get("Fecha") or ""),
             str(row.get("Identificacion") or ""),
             str(row.get("usuario_mejor_gestion") or row.get("asesor_malla") or ""),
-            str(row.get("Hora_Entrada") or ""),
-            str(row.get("Hora_Salida") or ""),
         ]
         return hashlib.sha1("|".join(partes).encode()).hexdigest()
 
@@ -223,8 +221,6 @@ def normalizar_logueo_controlnext(df_raw: pd.DataFrame, catalogo: dict, origen: 
             str(row.get("Fecha") or ""),
             str(row.get("Identificacion") or ""),
             str(row.get("usuario_controlnext") or ""),
-            str(row.get("Primera_Entrada") or ""),
-            str(row.get("Ultima_Salida") or ""),
         ]
         return hashlib.sha1("|".join(partes).encode()).hexdigest()
 
@@ -357,3 +353,16 @@ def procesar_archivos_adherencia(archivos, db_path: str, catalogo: dict, tipo: s
 
     con.close()
     return resumen
+
+def reset_malla_turno(db_path: str) -> None:
+    con = sqlite3.connect(db_path)
+    con.execute("DELETE FROM malla_turno")
+    con.commit()
+    con.close()
+
+
+def reset_reporte_logueo(db_path: str) -> None:
+    con = sqlite3.connect(db_path)
+    con.execute("DELETE FROM reporte_logueo")
+    con.commit()
+    con.close()

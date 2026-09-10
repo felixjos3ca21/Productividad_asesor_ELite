@@ -11,7 +11,9 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-
+import plotly.express as px
+from st_aggrid import AgGrid, JsCode
+from scripts.importar_logueo import reset_malla_turno, reset_reporte_logueo
 
 # ===========================================================================
 # Carga de datos / firmas de archivo (cache)
@@ -729,11 +731,122 @@ def graficar_combo_mensual(resumen_diario: pd.DataFrame):
 # Sección Adherencia (UI completa)
 # ===========================================================================
 
+def construir_resumen_adherencia_simple(
+    df_malla: pd.DataFrame,
+    df_log: pd.DataFrame,
+    col_asesor: str = "Nombre_Asesor",
+    tolerancia_seg: int = 20,
+) -> pd.DataFrame:
+    """Cruce simple Malla (programado) vs ControlNext (real): entrada/salida
+    real vs programada, puntualidad al minuto, y deuda acumulada en el rango."""
+    if df_malla.empty or df_log.empty:
+        return pd.DataFrame()
+
+    malla = df_malla.groupby([col_asesor, "Fecha", "Campo"], as_index=False).agg(
+        Hora_Entrada=("Hora_Entrada", "first"),
+        Hora_Salida=("Hora_Salida", "first"),
+        Horas_Programadas_Min=("Horas_Programadas_Min", "sum"),
+    )
+    log = df_log.groupby([col_asesor, "Fecha"], as_index=False).agg(
+        Primera_Entrada=("Primera_Entrada", "first"),
+        Ultima_Salida=("Ultima_Salida", "first"),
+        Tiempo_Real_Linea_Min=("Tiempo_Real_Linea_Min", "sum"),
+    )
+
+    resumen = malla.merge(log, on=[col_asesor, "Fecha"], how="left")
+
+    def _td(col):
+        return pd.to_timedelta(resumen[col].astype("string"), errors="coerce")
+
+    ent_prog, ent_real = _td("Hora_Entrada"), _td("Primera_Entrada")
+    sal_prog, sal_real = _td("Hora_Salida"), _td("Ultima_Salida")
+    tolerancia = pd.to_timedelta(f"{tolerancia_seg}s")
+
+    def _fmt_hhmmss(td):
+        if pd.isna(td):
+            return ""
+        total_seg = int(td.total_seconds())
+        h, resto = divmod(total_seg, 3600)
+        m, s = divmod(resto, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _fmt_hhmmss_deuda(minutos):
+        if minutos <= 0:
+            return "00:00:00"
+        total_seg = int(round(minutos * 60))
+        h, resto = divmod(total_seg, 3600)
+        m, s = divmod(resto, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    minutos_tarde, estado_llegada = [], []
+    for p, r in zip(ent_prog, ent_real):
+        if pd.isna(r):
+            minutos_tarde.append(0.0)
+            estado_llegada.append("⚠️ Sin registro")
+            continue
+        diff = r - p
+        if diff <= tolerancia:
+            minutos_tarde.append(0.0)
+            estado_llegada.append("✅ A tiempo")
+        else:
+            mins = diff.total_seconds() / 60.0
+            minutos_tarde.append(mins)
+            estado_llegada.append(f"🔴 Tarde +{_fmt_hhmmss_deuda(mins)}")
+
+    minutos_temprano, estado_salida = [], []
+    for p, r in zip(sal_prog, sal_real):
+        if pd.isna(r):
+            minutos_temprano.append(0.0)
+            estado_salida.append("⚠️ Sin registro")
+            continue
+        diff = p - r
+        if diff <= tolerancia:
+            minutos_temprano.append(0.0)
+            estado_salida.append("✅ Cumplió")
+        else:
+            mins = diff.total_seconds() / 60.0
+            minutos_temprano.append(mins)
+            estado_salida.append(f"🔴 Se fue -{_fmt_hhmmss_deuda(mins)}")
+
+    resumen["Entrada_Prog"] = [_fmt_hhmmss(t) for t in ent_prog]
+    resumen["Entrada_Real"] = [_fmt_hhmmss(t) for t in ent_real]
+    resumen["Llegada"] = estado_llegada
+
+    resumen["Salida_Prog"] = [_fmt_hhmmss(t) for t in sal_prog]
+    resumen["Salida_Real"] = [_fmt_hhmmss(t) for t in sal_real]
+    resumen["Salida"] = estado_salida
+
+    resumen["_deuda_dia_min"] = [t + s for t, s in zip(minutos_tarde, minutos_temprano)]
+    resumen["Debe_Tiempo"] = resumen["_deuda_dia_min"].map(
+        lambda v: "✅ Cumplido" if v <= 0 else f"🔴 Debe {_fmt_hhmmss_deuda(v)}"
+    )
+
+    acumulado = (
+        resumen.groupby(col_asesor, as_index=False)["_deuda_dia_min"]
+        .sum()
+        .rename(columns={"_deuda_dia_min": "_acumulado_min"})
+    )
+    resumen = resumen.merge(acumulado, on=col_asesor, how="left")
+    resumen["Acumulado_Rango"] = resumen["_acumulado_min"].map(_fmt_hhmmss_deuda)
+
+    resumen["Fecha"] = pd.to_datetime(resumen["Fecha"]).dt.strftime("%d/%m/%Y")
+
+    salida = resumen[[
+        col_asesor, "Campo", "Fecha",
+        "Entrada_Prog", "Entrada_Real", "Llegada",
+        "Salida_Prog", "Salida_Real", "Salida",
+        "Debe_Tiempo", "Acumulado_Rango",
+    ]].rename(columns={col_asesor: "Asesor"})
+
+    return salida.sort_values(["Asesor", "Fecha"]).reset_index(drop=True)
+
+
 def render_modulo_adherencia(db_path: str, catalogo: dict):
     st.markdown("## ⏱️ Adherencia - Claro")
     st.caption("Carga de Malla de Turnos (Programado) y Reporte Real ControlNext (Sucedido) para análisis de cumplimiento y tiempos en línea.")
 
-    with st.expander("📥 Cargar Archivos de Adherencia (Turnos / ControlNext Real)", expanded=False):
+    with st.expander("📥 Cargar Archivos de Adherencia (Turnos / ControlNext)", expanded=False):
+        
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("##### 📅 Malla de Turno (Programado)")
@@ -775,6 +888,57 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
                 else:
                     st.warning("Selecciona al menos un archivo de Reporte ControlNext.")
 
+    with st.expander("⚠️ Reset de las Tablas de Adherencia", expanded=False):
+        c_r1, c_r2 = st.columns(2)
+        with c_r1:
+                    st.markdown("**Resetear Malla de Turno**")
+                    if "confirmar_reset_malla" not in st.session_state:
+                        st.session_state["confirmar_reset_malla"] = False
+        
+                    if not st.session_state["confirmar_reset_malla"]:
+                        if st.button("🗑️ Resetear Malla de Turno", key="btn_reset_malla"):
+                            st.session_state["confirmar_reset_malla"] = True
+                            st.rerun()
+                    else:
+                        st.warning("⚠️ Esto eliminará **todos** los registros de Malla de Turno. ¿Confirmas?")
+                        col_si, col_no = st.columns(2)
+                        with col_si:
+                            if st.button("✅ Sí, eliminar todo", key="btn_reset_malla_confirmar"):
+                                with st.spinner("Reseteando Malla de Turno..."):
+                                    reset_malla_turno(db_path)
+                                st.session_state["confirmar_reset_malla"] = False
+                                st.cache_data.clear()
+                                st.success("✅ Malla de Turno reseteada.")
+                                st.rerun()
+                        with col_no:
+                            if st.button("❌ Cancelar", key="btn_reset_malla_cancelar"):
+                                st.session_state["confirmar_reset_malla"] = False
+                                st.rerun()
+        
+        with c_r2:
+                    st.markdown("**Resetear Reporte ControlNext**")
+                    if "confirmar_reset_logueo" not in st.session_state:
+                        st.session_state["confirmar_reset_logueo"] = False
+        
+                    if not st.session_state["confirmar_reset_logueo"]:
+                        if st.button("🗑️ Resetear Reporte ControlNext", key="btn_reset_logueo"):
+                            st.session_state["confirmar_reset_logueo"] = True
+                            st.rerun()
+                    else:
+                        st.warning("⚠️ Esto eliminará **todos** los registros del Reporte ControlNext. ¿Confirmas?")
+                        col_si2, col_no2 = st.columns(2)
+                        with col_si2:
+                            if st.button("✅ Sí, eliminar todo", key="btn_reset_logueo_confirmar"):
+                                with st.spinner("Reseteando Reporte ControlNext..."):
+                                    reset_reporte_logueo(db_path)
+                                st.session_state["confirmar_reset_logueo"] = False
+                                st.cache_data.clear()
+                                st.success("✅ Reporte ControlNext reseteado.")
+                                st.rerun()
+                        with col_no2:
+                            if st.button("❌ Cancelar", key="btn_reset_logueo_cancelar"):
+                                st.session_state["confirmar_reset_logueo"] = False
+                                st.rerun()
     try:
         con = sqlite3.connect(db_path)
         df_log = pd.read_sql_query("SELECT * FROM reporte_logueo", con)
@@ -788,6 +952,7 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
         st.info("No hay registros de Malla de Turnos ni Reporte ControlNext cargados todavía. Despliega la sección de carga superior para importar archivos.")
         return
 
+    # ── Homologación de nombres vía catálogo (igual que en Productividad) ──
     if not df_log.empty:
         df_log["Fecha"] = pd.to_datetime(df_log["Fecha"], errors="coerce").dt.normalize()
     if not df_malla.empty:
@@ -806,11 +971,13 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
     else:
         min_f = max_f = pd.Timestamp.now().date()
 
-    st.markdown("### 🔍 Filtros Módulo Adherencia")
+    hoy = pd.Timestamp.now().date()
+    fecha_default = hoy if min_f <= hoy <= max_f else max_f
+    st.markdown("### 🔍 Filtros")
     fl1, fl2, fl3 = st.columns(3)
     with fl1:
         rango_log = st.date_input(
-            "Rango de Fechas", value=(min_f, max_f), min_value=min_f, max_value=max_f, key="rango_date_adh",
+            "Rango de Fechas", value=(fecha_default, fecha_default), min_value=min_f, max_value=max_f, key="rango_date_adh",
         )
 
     asesores_log = []
@@ -864,123 +1031,357 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
     else:
         df_malla_f = df_malla
 
-    # tot_min_real_linea = df_log_f["Tiempo_Real_Linea_Min"].sum() if not df_log_f.empty and "Tiempo_Real_Linea_Min" in df_log_f.columns else 0.0
-    # tot_min_almuerzo = df_log_f["Almuerzo_Min"].sum() if not df_log_f.empty and "Almuerzo_Min" in df_log_f.columns else 0.0
-    # tot_min_bano = df_log_f["Bano_Min"].sum() if not df_log_f.empty and "Bano_Min" in df_log_f.columns else 0.0
-    # tot_min_breaks = (df_log_f["Break10_Min"].sum() + df_log_f["Break15_Min"].sum()) if not df_log_f.empty and "Break10_Min" in df_log_f.columns else 0.0
-    # asesores_con_logueo = df_log_f["Nombre_Asesor"].nunique() if not df_log_f.empty and "Nombre_Asesor" in df_log_f.columns else 0
+    st.divider()
 
-    # tot_hrs_real_linea = tot_min_real_linea / 60.0
-    # tot_hrs_almuerzo = tot_min_almuerzo / 60.0
-    # tot_hrs_bano = tot_min_bano / 60.0
-    # tot_hrs_breaks = tot_min_breaks / 60.0
+    resumen_simple = construir_resumen_adherencia_simple(df_malla_f, df_log_f, col_asesor="Nombre_Asesor")
 
-    # st.markdown(render_kpi_row([
-    #     {"label": "Asesores Evaluados", "value": f"{asesores_con_logueo}", "icon": "👥", "color": "#4e9af1"},
-    #     {"label": "Tiempo Real en Línea", "value": f"{tot_hrs_real_linea:.1f} hrs", "icon": "⏱️", "color": "#34d399"},
-    #     {"label": "Tiempo en Almuerzo", "value": f"{tot_hrs_almuerzo:.1f} hrs", "icon": "🍱", "color": "#fbbf24"},
-    #     {"label": "Tiempos Baño y Breaks", "value": f"{(tot_hrs_bano + tot_hrs_breaks):.1f} hrs", "icon": "☕", "color": "#a78bfa"},
-    # ]), unsafe_allow_html=True)
+    if resumen_simple.empty:
+        st.info("No hay coincidencias entre Malla de Turno y ControlNext Real para los filtros seleccionados.")
+        return
+#------------------------------------------------
+# Cuadro resumen de adherencia simple (entrada/salida real vs programado)
+#-------------------------------------------------
+    st.markdown("### 📋 Entrada / Salida real vs. programado")
+    badge_cell_style = JsCode("""
+    function(params) {
+        if (!params.value) return {};
+        if (params.value.indexOf('🔴') !== -1) {
+            return {backgroundColor: '#fde8e9', color: '#990011', fontWeight: '600'};
+        }
+        if (params.value.indexOf('✅') !== -1) {
+            return {backgroundColor: '#e6f9ef', color: '#0f9d58', fontWeight: '600'};
+        }
+        if (params.value.indexOf('⚠️') !== -1) {
+            return {backgroundColor: '#fff8e1', color: '#b8860b', fontWeight: '600'};
+        }
+        return {};
+    }
+    """)
+
+    grid_options_adh = {
+        "defaultColDef": {"sortable": True, "filter": True, "resizable": True},
+        "domLayout": "autoHeight",
+        "columnDefs": [
+            {"field": "Asesor", "headerName": "Asesor", "pinned": "left", "minWidth": 170},
+            {"field": "Campo", "headerName": "Campo", "minWidth": 110},
+            {"field": "Fecha", "headerName": "Fecha", "minWidth": 110},
+            {"field": "Entrada_Prog", "headerName": "Entrada Prog", "minWidth": 120},
+            {"field": "Entrada_Real", "headerName": "Entrada Real", "minWidth": 120},
+            {"field": "Llegada", "headerName": "Llegada", "cellStyle": badge_cell_style, "minWidth": 170},
+            {"field": "Salida_Prog", "headerName": "Salida Prog", "minWidth": 120},
+            {"field": "Salida_Real", "headerName": "Salida Real", "minWidth": 120},
+            {"field": "Salida", "headerName": "Salida", "cellStyle": badge_cell_style, "minWidth": 170},
+            {"field": "Debe_Tiempo", "headerName": "Debe (día)", "cellStyle": badge_cell_style, "minWidth": 170},
+            {"field": "Acumulado_Rango", "headerName": "Acumulado rango", "cellStyle": badge_cell_style, "minWidth": 180},
+        ],
+    }
+
+    custom_css_adh = {
+        ".ag-header": {"background-color": "#990011 !important"},
+        ".ag-header-cell-label": {"color": "white !important", "font-weight": "600"},
+        ".ag-row-even": {"background-color": "rgba(255,255,255,0.85) !important"},
+        ".ag-row-odd": {"background-color": "rgba(253,232,233,0.5) !important"},
+    }
+
+    AgGrid(
+        resumen_simple,
+        gridOptions=grid_options_adh,
+        custom_css=custom_css_adh,
+        allow_unsafe_jscode=True,
+        fit_columns_on_grid_load=True,
+        theme="alpine",
+        update_mode="NO_UPDATE",
+        key="grid_adherencia_simple",
+    )
+    st.caption(f"{resumen_simple['Asesor'].nunique()} asesores · {len(resumen_simple)} filas mostradas")
+
+    csv_bytes = resumen_simple.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Descargar resumen de adherencia (CSV)",
+        data=csv_bytes,
+        file_name=f"adherencia_{f_desde}_a_{f_hasta}.csv",
+        mime="text/csv",
+        key="btn_descargar_adherencia_simple",
+    )
+
+# ===========================================================================
+# Sección Pagos x Asesor (UI completa)
+# ===========================================================================
+
+@st.cache_data(show_spinner="Cargando pagos desde base de datos...", ttl=None)
+def cargar_pagos_desde_sqlite(db_path: str, firma_db_val: tuple) -> pd.DataFrame:
+    if not Path(db_path).exists():
+        return pd.DataFrame()
+    try:
+        con = sqlite3.connect(db_path)
+        df = pd.read_sql_query(
+            "SELECT * FROM pagos_x_asesor",
+            con,
+            parse_dates=["fecha_pago", "fecha_asignacion", "fechagestion"],
+        )
+        con.close()
+        return df
+    except Exception as e:
+        st.error(f"Error leyendo pagos_x_asesor: {e}")
+        return pd.DataFrame()
+
+
+def render_modulo_pagos_asesor(db_path: str):
+    st.markdown("## 💰 Pagos x Asesor")
+
+    df_pagos = cargar_pagos_desde_sqlite(db_path, firma_db(db_path))
+
+    if df_pagos.empty:
+        st.info("Aun no hay datos en pagos_x_asesor. Usa el panel lateral para cargar archivos.")
+        return
+
+    df_pagos["valor_pago"] = pd.to_numeric(df_pagos["valor_pago"], errors="coerce")
+    filas_sin_valor = df_pagos["valor_pago"].isna().sum()
+    if filas_sin_valor:
+        st.warning(f"{filas_sin_valor} filas tienen valor_pago no numerico y se excluyen de los totales.")
+
+    # ── Filtros ──────────────────────────────────────────────────────────
+    st.markdown("### 🔍 Filtros - Pagos")
+    col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
+
+    fecha_min = df_pagos["fecha_pago"].min()
+    fecha_max = df_pagos["fecha_pago"].max()
+    with col_f1:
+        rango_fecha = st.date_input(
+            "Fecha de pago",
+            value=(fecha_min, fecha_max) if pd.notna(fecha_min) else None,
+            key="filtro_fecha_pago",
+        )
+
+    types_disponibles = sorted(df_pagos["customer_type"].dropna().unique().tolist()) if "customer_type" in df_pagos.columns else []
+    with col_f2:
+        types_sel = st.multiselect("Tipo de Cliente", types_disponibles, default=types_disponibles, key="filtro_customer_type")
+
+    marcas_disponibles = sorted(df_pagos["marca"].dropna().unique().tolist())
+    with col_f3:
+        marcas_sel = st.multiselect("Marca", marcas_disponibles, default=marcas_disponibles, key="filtro_marca")
+
+    asesores_disponibles = sorted(df_pagos["Nombre_Asesor"].dropna().unique().tolist())
+    with col_f4:
+        asesores_sel = st.multiselect("Asesor", asesores_disponibles, default=asesores_disponibles, key="filtro_asesor")
+
+    tipificaciones_disponibles = sorted(df_pagos["mejorperfil"].dropna().unique().tolist())
+    with col_f5:
+        tipificaciones_sel = st.multiselect(
+            "Tipificación", tipificaciones_disponibles, default=tipificaciones_disponibles, key="filtro_tipificacion"
+        )
+
+    base = df_pagos.copy()
+    if isinstance(rango_fecha, tuple) and len(rango_fecha) == 2:
+        f_desde, f_hasta = pd.to_datetime(rango_fecha[0]), pd.to_datetime(rango_fecha[1])
+        base = base[(base["fecha_pago"] >= f_desde) & (base["fecha_pago"] <= f_hasta)]
+
+    if types_sel and "customer_type" in base.columns:
+        base = base[base["customer_type"].isin(types_sel)]
+    if marcas_sel:
+        base = base[base["marca"].isin(marcas_sel)]
+    if asesores_sel:
+        base = base[base["Nombre_Asesor"].isin(asesores_sel)]
+    if tipificaciones_sel:
+        base = base[base["mejorperfil"].isin(tipificaciones_sel)]
+
+    if base.empty:
+        st.info("No hay datos para los filtros seleccionados.")
+        return
 
     st.divider()
 
-    st.markdown("### 📊 Desglose de Adherencia y ControlNext Real")
-    t1, t2, t3 = st.tabs(["📋 ControlNext Real por Asesor", "📅 Malla de Turnos (Programado)", "🎯 Comparativo de Adherencia"])
-    with t1:
-        if not df_log_f.empty:
-            grp = df_log_f.groupby(["Nombre_Asesor", "Campo"], as_index=False).agg(
-                Dias_Registrados=("Fecha", "nunique"),
-                Tiempo_Real_Linea_Min=("Tiempo_Real_Linea_Min", "sum"),
-                Almuerzo_Min=("Almuerzo_Min", "sum"),
-                Bano_Min=("Bano_Min", "sum"),
-                Break10_Min=("Break10_Min", "sum"),
-                Break15_Min=("Break15_Min", "sum"),
-                Tiempo_Total_Llamada_Min=("Tiempo_Total_Llamada_Min", "sum"),
-            )
-            grp["Horas_En_Linea"] = (grp["Tiempo_Real_Linea_Min"] / 60.0).round(2)
-            grp["Horas_Almuerzo"] = (grp["Almuerzo_Min"] / 60.0).round(2)
-            grp["Horas_Baño"] = (grp["Bano_Min"] / 60.0).round(2)
-            grp["Horas_Breaks"] = ((grp["Break10_Min"] + grp["Break15_Min"]) / 60.0).round(2)
+    # ── KPIs (mismo estilo de tarjetas que Productividad/Adherencia) ──────
+    total_pagado = base["valor_pago"].sum()
+    cantidad_pagos = len(base)
+    asesores_activos = base["Nombre_Asesor"].nunique(dropna=True)
+    promedio_x_asesor = total_pagado / asesores_activos if asesores_activos else 0
 
-            grp_show = grp.rename(columns={
-                "Nombre_Asesor": "Asesor",
-                "Dias_Registrados": "Días Activo",
-                "Horas_En_Linea": "Hrs Real en Línea",
-                "Horas_Almuerzo": "Hrs Almuerzo",
-                "Horas_Baño": "Hrs Baño",
-                "Horas_Breaks": "Hrs Breaks",
-            })[["Asesor", "Campo", "Días Activo", "Hrs Real en Línea", "Hrs Almuerzo", "Hrs Baño", "Hrs Breaks"]]
-            st.dataframe(grp_show, use_container_width=True, hide_index=True)
+    st.markdown(render_kpi_row([
+        {"label": "Total pagado", "value": f"${total_pagado:,.0f}".replace(",", "."), "icon": "💵", "color": "#34d399"},
+        {"label": "Cantidad de pagos", "value": f"{cantidad_pagos:,}".replace(",", "."), "icon": "🧾", "color": "#4e9af1"},
+        {"label": "Asesores con pago", "value": f"{asesores_activos}", "icon": "👥", "color": "#a78bfa"},
+        {"label": "Promedio x asesor", "value": f"${promedio_x_asesor:,.0f}".replace(",", "."), "icon": "📊", "color": "#fbbf24"},
+    ]), unsafe_allow_html=True)
 
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=grp["Nombre_Asesor"], y=grp["Horas_En_Linea"], name="Horas Real en Línea", marker_color="#34d399"))
-            fig.add_trace(go.Bar(x=grp["Nombre_Asesor"], y=grp["Horas_Almuerzo"], name="Horas Almuerzo", marker_color="#fbbf24"))
-            fig.add_trace(go.Bar(x=grp["Nombre_Asesor"], y=grp["Horas_Baño"], name="Horas Baño", marker_color="#a78bfa"))
-            fig.update_layout(barmode="stack", title="Horas Conectado y Pausas por Asesor (ControlNext Real)", height=420, xaxis_title="Asesor", yaxis_title="Horas")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay registros de ControlNext Real para los filtros seleccionados.")
+    st.divider()
 
-    with t2:
-        if not df_malla_f.empty:
-            malla_show = df_malla_f.copy()
-            malla_show["Fecha"] = pd.to_datetime(malla_show["Fecha"]).dt.strftime("%Y-%m-%d")
-            malla_show["Horas_Programadas"] = (malla_show["Horas_Programadas_Min"] / 60.0).round(2)
-            cols_malla = ["Fecha", "Nombre_Asesor", "Campo", "Hora_Entrada", "Hora_Salida", "Horas_Programadas", "Turno", "Novedad"]
-            malla_show = malla_show[[c for c in cols_malla if c in malla_show.columns]]
-            st.dataframe(malla_show, use_container_width=True, hide_index=True)
-        else:
-            st.info("No hay registros de Malla de Turno para los filtros seleccionados.")
+    # ── Resumen por asesor ──────────────────────────────────────────────
+    resumen_asesor = (
+        base.groupby("Nombre_Asesor", as_index=False)
+        .agg(
+            total_pagado=("valor_pago", "sum"),
+            cantidad_pagos=("cuenta", "count"),
+            Campo=("Campo", "first"),
+        )
+        .sort_values("total_pagado", ascending=False)
+    )
 
-    with t3:
-        if not df_malla_f.empty and not df_log_f.empty:
-            df_malla_grp = df_malla_f.groupby(["Nombre_Asesor", "Fecha", "Campo"], as_index=False).agg(
-                Hora_Entrada=("Hora_Entrada", "first"),
-                Hora_Salida=("Hora_Salida", "first"),
-                Horas_Programadas_Min=("Horas_Programadas_Min", "sum"),
-            )
-            df_log_grp = df_log_f.groupby(["Nombre_Asesor", "Fecha"], as_index=False).agg(
-                Primera_Entrada=("Primera_Entrada", "first"),
-                Ultima_Salida=("Ultima_Salida", "first"),
-                Tiempo_Real_Linea_Min=("Tiempo_Real_Linea_Min", "sum"),
-                Almuerzo_Min=("Almuerzo_Min", "sum"),
-            )
-            merged = df_malla_grp.merge(df_log_grp, on=["Nombre_Asesor", "Fecha"], how="inner")
-            if not merged.empty:
-                merged["Hrs_Programadas"] = (merged["Horas_Programadas_Min"] / 60.0).round(2)
-                merged["Hrs_Real_Linea"] = (merged["Tiempo_Real_Linea_Min"] / 60.0).round(2)
-                merged["Pct_Adherencia"] = (merged["Tiempo_Real_Linea_Min"] / merged["Horas_Programadas_Min"].replace(0, pd.NA) * 100).fillna(0).round(1)
+    st.subheader("Resumen por asesor")
+    st.dataframe(
+        resumen_asesor,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "total_pagado": st.column_config.NumberColumn("Total pagado", format="$ %d"),
+            "cantidad_pagos": st.column_config.NumberColumn("Cantidad de pagos", format="%d"),
+        },
+    )
+    st.divider()
 
-                def _semaforo_adh(pct):
-                    if pct >= 90:
-                        return "🟢"
-                    if pct >= 80:
-                        return "🟡"
-                    return "🔴"
+    # ── Pagos por día ───────────────────────────────────────────────────
+    st.subheader("Pagos por día")
 
-                merged["Estado"] = merged["Pct_Adherencia"].apply(_semaforo_adh)
-                merged["Fecha"] = pd.to_datetime(merged["Fecha"]).dt.strftime("%Y-%m-%d")
+    base["dia_pago"] = base["fecha_pago"].dt.day
+    col_color = "customer_type" if "customer_type" in base.columns else "Nombre_Asesor"
+    pagos_diarios = (
+        base.groupby(["dia_pago", col_color], as_index=False)
+        .agg(total_dia=("valor_pago", "sum"))
+    )
 
-                cols_adh = [
-                    "Estado", "Nombre_Asesor", "Campo", "Fecha",
-                    "Hora_Entrada", "Hora_Salida", "Primera_Entrada", "Ultima_Salida",
-                    "Hrs_Programadas", "Hrs_Real_Linea", "Pct_Adherencia"
-                ]
-                show_adh = merged[cols_adh].rename(columns={
-                    "Nombre_Asesor": "Asesor",
-                    "Hora_Entrada": "Hora Entrada Prog",
-                    "Hora_Salida": "Hora Salida Prog",
-                    "Primera_Entrada": "Entrada Real",
-                    "Ultima_Salida": "Salida Real",
-                    "Hrs_Programadas": "Hrs Programadas",
-                    "Hrs_Real_Linea": "Hrs Real en Línea",
-                    "Pct_Adherencia": "% Adherencia",
-                })
-                st.dataframe(show_adh, use_container_width=True, hide_index=True)
+    fig = px.line(
+        pagos_diarios,
+        x="dia_pago",
+        y="total_dia",
+        color=col_color,
+        markers=True,
+        labels={"dia_pago": "Día", "total_dia": "Total pagado", col_color: "Tipo de Cliente"},
+    )
+    fig.update_layout(hovermode="x unified")
+    st.plotly_chart(fig, width="stretch")
 
-                avg_adh = merged["Pct_Adherencia"].mean()
-                st.metric("🎯 Adherencia Promedio General", f"{avg_adh:.1f}%")
-            else:
-                st.info("No hay coincidencias de asesor y fecha entre la Malla de Turno y el Reporte ControlNext.")
-        else:
-            st.info("Carga tanto la Malla de Turnos como el Reporte ControlNext para ver el comparativo de Adherencia.")
+    # NOTA: esto queda tal cual estaba en tu archivo original — filtra siempre
+    # agosto (mes == 8) sin importar el rango de fechas elegido arriba.
+    # Si no era intencional, dímelo y lo cambiamos para que use el rango filtrado.
+    resumen_mes = (
+        base[base["fecha_pago"].dt.month == 8]
+        .groupby(base["fecha_pago"].dt.day)["valor_pago"]
+        .sum()
+        .reset_index()
+    )
+    st.write(resumen_mes)
+    st.write("Total agosto:", resumen_mes["valor_pago"].sum())
+
+    # ── Meta por asesor ─────────────────────────────────────────────────
+    st.markdown("### Meta por asesor")
+    meta = st.number_input(
+        "Meta de recaudo por asesor",
+        min_value=0.0,
+        value=0.0,
+        step=10000.0,
+        format="%.0f",
+        key="input_meta_asesor",
+    )
+
+    resumen_asesor["meta"] = meta
+    resumen_asesor["valor_faltante"] = resumen_asesor["total_pagado"] - resumen_asesor["meta"]
+    resumen_asesor["%_meta"] = resumen_asesor.apply(
+        lambda r: (r["total_pagado"] / r["meta"] * 100) if r["meta"] > 0 else 0.0,
+        axis=1,
+    )
+    resumen_asesor["estado"] = resumen_asesor["valor_faltante"].apply(lambda v: "✅ Cumplida" if v >= 0 else "⏳ En curso")
+
+    marcas_texto = ", ".join(marcas_sel) if marcas_sel else "Todas"
+    types_texto = ", ".join(types_sel) if types_sel else "Todos"
+    st.subheader(f"Resumen por asesor — Marca: {marcas_texto} | Tipo de Cliente: {types_texto}")
+
+    resumen_asesor = resumen_asesor.sort_values("total_pagado", ascending=False).reset_index(drop=True)
+    resumen_asesor["posicion"] = resumen_asesor.index + 1
+    df_grid = resumen_asesor[
+        ["posicion", "Nombre_Asesor", "total_pagado", "meta", "valor_faltante", "%_meta", "estado"]
+    ].copy()
+
+    money_formatter = JsCode("""
+    function(params) {
+        if (params.value == null) return '';
+        return '$ ' + Math.round(params.value).toLocaleString('es-CO');
+    }
+    """)
+
+    progress_renderer = JsCode("""
+    class ProgressBarRenderer {
+        init(params) {
+            this.eGui = document.createElement('div');
+            const real = params.value == null ? 0 : params.value;
+            const ancho = Math.min(Math.max(real, 0), 100);
+            const color = real >= 100 ? '#2ecc71' : '#3498db';
+            this.eGui.innerHTML = `
+                <div style="background:#e2e8f0;border-radius:4px;height:18px;width:100%;position:relative;">
+                    <div style="background:${color};width:${ancho}%;height:100%;border-radius:4px;"></div>
+                    <span style="position:absolute;inset:0;text-align:center;font-size:11px;line-height:18px;">${real.toFixed(0)}%</span>
+                </div>`;
+        }
+        getGui() { return this.eGui; }
+    }
+    """)
+
+    grid_options = {
+        "defaultColDef": {"sortable": True, "filter": True, "resizable": True},
+        "columnDefs": [
+            {"field": "posicion", "headerName": "Posición", "pinned": "left"},
+            {"field": "Nombre_Asesor", "headerName": "Asesor", "pinned": "left"},
+            {"field": "total_pagado", "headerName": "Total pagado", "valueFormatter": money_formatter, "type": ["numericColumn"]},
+            {"field": "meta", "headerName": "Meta", "valueFormatter": money_formatter, "type": ["numericColumn"]},
+            {"field": "valor_faltante", "headerName": "Falta / Excedente", "valueFormatter": money_formatter, "type": ["numericColumn"]},
+            {"field": "%_meta", "headerName": "Avance", "cellRenderer": progress_renderer, "type": ["numericColumn"]},
+            {"field": "estado", "headerName": "Estado"},
+        ],
+    }
+
+    # Tema CLARO (rojo) para que la grilla combine con el resto de la página
+    custom_css = {
+        ".ag-header": {"background-color": "#990011 !important"},
+        ".ag-header-cell-label": {"color": "white !important", "font-weight": "600"},
+        ".ag-row-even": {"background-color": "rgba(255,255,255,0.85) !important"},
+        ".ag-row-odd": {"background-color": "rgba(253,232,233,0.5) !important"},
+    }
+
+    altura_fila = 42
+    altura_header = 46
+    altura_calculada = altura_header + altura_fila * len(df_grid) + 10
+    altura_calculada = min(altura_calculada, 900)
+
+    AgGrid(
+        df_grid,
+        gridOptions=grid_options,
+        custom_css=custom_css,
+        allow_unsafe_jscode=True,
+        fit_columns_on_grid_load=True,
+        theme="alpine",
+        height=altura_calculada,
+        update_mode="NO_UPDATE",
+        key="grid_resumen_asesor_watermark_v2",
+    )
+    st.caption(f"Filas en df_grid: {len(df_grid)}")
+
+    st.divider()
+
+    with st.expander("🔍 Ver detalle de pagos (cuenta, asesor, día, valor, campo, marca, tipo de cliente)"):
+        cols_det = ["cuenta", "Nombre_Asesor", "fecha_pago", "valor_pago", "Campo", "marca", "customer_type", "mejorperfil"]
+        cols_det = [c for c in cols_det if c in base.columns]
+        detalle = base[cols_det].sort_values("fecha_pago", ascending=False).copy()
+
+        st.dataframe(
+            detalle,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "cuenta": st.column_config.TextColumn("Cuenta"),
+                "Nombre_Asesor": st.column_config.TextColumn("Asesor"),
+                "fecha_pago": st.column_config.DateColumn("Fecha de pago", format="DD/MM/YYYY"),
+                "valor_pago": st.column_config.NumberColumn("Valor pagado", format="$ %d"),
+                "Campo": st.column_config.TextColumn("Campo"),
+                "marca": st.column_config.TextColumn("Marca"),
+                "customer_type": st.column_config.TextColumn("Tipo de Cliente"),
+                "mejorperfil": st.column_config.TextColumn("Mejor Perfil"),
+            },
+        )
+        csv_bytes = detalle.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button(
+            label="⬇️ Descargar detalle en CSV",
+            data=csv_bytes,
+            file_name=f"detalle_pagos_asesor_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            key="btn_descargar_detalle_pagos",
+        )
+        st.caption(f"{len(detalle):,} pagos individuales bajo los filtros actuales".replace(",", "."))

@@ -18,11 +18,11 @@ pagina_productividad = st.Page(
     default=True,
 )
 
-pagina_pagos_x_asesor = st.Page(
-    "Pages/02_pagos_x_asesor.py",
-    title="Pagos por asesor",
-    icon=":material/monetization_on:",
-)
+    # pagina_pagos_x_asesor = st.Page(
+    #     "Pages/02_pagos_x_asesor.py",
+    #     title="Pagos por asesor",
+    #     icon=":material/monetization_on:",
+    # )
 pagina_productividad_baguer = st.Page(
     "Pages/03_productividad_BAGUER.py",
     title="Productividad BAGUER",
@@ -40,7 +40,7 @@ pagina_productividad_dupree = st.Page(
 navegacion = st.navigation(
     [
         pagina_productividad,
-        pagina_pagos_x_asesor,
+        #pagina_pagos_x_asesor,
         pagina_productividad_baguer,
         pagina_productividad_dupree,
     ]
