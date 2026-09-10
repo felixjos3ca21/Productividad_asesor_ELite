@@ -4,7 +4,7 @@ import math
 import pandas as pd
 import streamlit as st
 from scripts.actualizar_archivo import render_actualizar_archivo_sidebar
-from scripts.importar_gestiones import DEFAULT_CARPETAS, ejecutar_etl
+from scripts.importar_gestiones import DEFAULT_CARPETAS, ejecutar_etl, inicializar_db
 from scripts.funciones_apoyo import (
     obtener_firma_archivo,
     firma_db,
@@ -34,7 +34,7 @@ from scripts.actualizar_archivo import render_actualizar_pagos_sidebar
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DB_PATH = str(_REPO_ROOT / "gestiones.db")
 
-
+inicializar_db(_DB_PATH)
 
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -179,12 +179,12 @@ if seccion == "Productividad":
                         st.warning(res_etl["advertencia"])
                     st.rerun()
 
-    if not Path(_DB_PATH).exists():
-        st.error(
-            "No se encontro la base de datos **gestiones.db**.\n\n"
-            "Utiliza la sección **'🔄 Actualizar Base de Datos'** en la barra lateral para procesar los archivos de gestiones."
-        )
-        st.stop()
+    # if not Path(_DB_PATH).exists():
+    #     st.error(
+    #         "No se encontro la base de datos **gestiones.db**.\n\n"
+    #         "Utiliza la sección **'🔄 Actualizar Base de Datos'** en la barra lateral para procesar los archivos de gestiones."
+    #     )
+    #     st.stop()
 
     df_raw = cargar_desde_sqlite(_DB_PATH, firma_db(_DB_PATH))
 	
