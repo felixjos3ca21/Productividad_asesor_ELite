@@ -6,7 +6,7 @@ Funciones auxiliares compartidas por la página de Productividad
 import json
 import sqlite3
 from pathlib import Path
-
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -1127,7 +1127,38 @@ def cargar_pagos_desde_sqlite(db_path: str, firma_db_val: tuple) -> pd.DataFrame
 
 
 def render_modulo_pagos_asesor(db_path: str):
-    st.markdown("## 💰 Pagos x Asesor")
+    st.markdown("### 💰 Pagos x Asesor")
+    col_f1, col_f2, col_f3, = st.columns(3)
+
+    with col_f1:
+        with st.expander("🧹 Limpieza de duplicados en pagos_x_asesor"):
+            st.caption(
+                "Elimina registros duplicados dejando solo el de clave_pago más alta "
+            )
+            confirmar_limpieza = st.checkbox(
+                "Confirmo que quiero eliminar los duplicados de forma permanente",
+                key="chk_confirmar_limpieza_pagos",
+            )
+            if st.button("Eliminar duplicados", key="btn_limpiar_pagos_duplicados", disabled=not confirmar_limpieza):
+                con = sqlite3.connect(db_path)
+                try:
+                    cur = con.execute(
+                        """
+                        DELETE FROM pagos_x_asesor
+                        WHERE clave_pago NOT IN (
+                            SELECT MAX(clave_pago)
+                            FROM pagos_x_asesor
+                            GROUP BY cuenta, valor_pago, fecha_pago
+                        )
+                        """
+                    )
+                    con.commit()
+                    filas_eliminadas = cur.rowcount
+                finally:
+                    con.close()
+                st.cache_data.clear()
+                st.success(f"Se eliminaron {filas_eliminadas} registros duplicados.")
+                st.rerun()
 
     df_pagos = cargar_pagos_desde_sqlite(db_path, firma_db(db_path))
 
@@ -1385,3 +1416,39 @@ def render_modulo_pagos_asesor(db_path: str):
             key="btn_descargar_detalle_pagos",
         )
         st.caption(f"{len(detalle):,} pagos individuales bajo los filtros actuales".replace(",", "."))
+
+# ===========================================================================
+#Funciones de apoyyo para modulo de dupree
+# ===========================================================================
+
+def cargar_asesores(json_path: str) -> dict:
+    with open(json_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def buscar_vigencia(usuario: str, fecha_gestion, asesores: dict):
+    info = asesores.get(usuario)
+    if not info:
+        return None, None
+
+    fecha = pd.to_datetime(fecha_gestion).date()
+
+    for v in info["vigencias"]:
+        desde = pd.to_datetime(v["desde"]).date()
+        hasta = pd.to_datetime(v["hasta"]).date() if v["hasta"] else None
+        if desde <= fecha and (hasta is None or fecha <= hasta):
+            return v["Nombre_Asesor"], v["Campo"]
+
+    return None, None
+
+def cruzar_con_asesores(df: pd.DataFrame, json_path: str) -> pd.DataFrame:
+    asesores = cargar_asesores(json_path)
+
+    resultados = df.apply(
+        lambda row: buscar_vigencia(row["asesor_gestion"], row["fechagestion"], asesores),
+        axis=1,
+        result_type="expand"
+    )
+    df["Nombre_Asesor"] = resultados[0]
+    df["Campo"] = resultados[1]
+
+    return df
