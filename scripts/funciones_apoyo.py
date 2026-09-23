@@ -738,90 +738,36 @@ LIMITES_ALMUERZO_MIN = {
     "Almuerzo_30Min_Min": ("Almuerzo 30 Min", 30),
 }
 
-
-def construir_resumen_almuerzo(
-    df_log: pd.DataFrame,
-    col_asesor: str = "Nombre_Asesor",
-    tolerancia_seg: int = 20,
-) -> pd.DataFrame:
-    """Valida, por asesor y día, si el tiempo tomado en el tipo de almuerzo
-    registrado (1 hora / 40 min / 30 min) se pasó del límite permitido."""
-    cols_almuerzo = [c for c in LIMITES_ALMUERZO_MIN if c in df_log.columns]
-    if df_log.empty or not cols_almuerzo:
-        return pd.DataFrame()
-
-    agg = {c: (c, "sum") for c in cols_almuerzo}
-    log = df_log.groupby([col_asesor, "Fecha", "Campo"], as_index=False).agg(**agg)
-
-    def _fmt_hhmmss(minutos):
-        total_seg = int(round(minutos * 60))
-        h, resto = divmod(total_seg, 3600)
-        m, s = divmod(resto, 60)
-        return f"{h:02d}:{m:02d}:{s:02d}"
-
-    filas = []
-    for _, row in log.iterrows():
-        for col, (etiqueta, limite_min) in LIMITES_ALMUERZO_MIN.items():
-            duracion_min = row.get(col) or 0.0
-            if duracion_min <= 0:
-                continue
-            limite_seg = limite_min * 60 + tolerancia_seg
-            duracion_seg = duracion_min * 60
-            if duracion_seg <= limite_seg:
-                estado = "✅ Cumplió"
-            else:
-                exceso_min = (duracion_seg - limite_seg) / 60.0
-                estado = f"🔴 Excedió +{_fmt_hhmmss(exceso_min)}"
-            filas.append({
-                "Asesor": row[col_asesor],
-                "Campo": row["Campo"],
-                "Fecha": row["Fecha"],
-                "Tipo_Almuerzo": etiqueta,
-                "Duracion_Real": _fmt_hhmmss(duracion_min),
-                "Tiempo_Permitido": _fmt_hhmmss(limite_min),
-                "Estado": estado,
-            })
-
-    resultado = pd.DataFrame(filas)
-    if resultado.empty:
-        return resultado
-
-    resultado["Fecha"] = pd.to_datetime(resultado["Fecha"]).dt.strftime("%d/%m/%Y")
-    return resultado.sort_values(["Asesor", "Fecha"]).reset_index(drop=True)
+# Tiempo permitido (en minutos) por tipo de pausa.
+LIMITES_PAUSAS_MIN = {
+    "Bano_Min": ("Baño", 5),
+    "Break10_Min": ("Break 10", 10),
+    "Break15_Min": ("Break 15", 15),
+    "PausasActivas_Min": ("Pausas Activas", 5),
+}
 
 
-def construir_resumen_adherencia_simple(
+def _fmt_hhmmss_min(minutos: float) -> str:
+    minutos = max(minutos, 0.0)
+    total_seg = int(round(minutos * 60))
+    h, resto = divmod(total_seg, 3600)
+    m, s = divmod(resto, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def construir_reporte_adherencia_general(
     df_malla: pd.DataFrame,
     df_log: pd.DataFrame,
     col_asesor: str = "Nombre_Asesor",
     tolerancia_seg: int = 20,
 ) -> pd.DataFrame:
-    """Cruce simple Malla (programado) vs ControlNext (real): entrada/salida
-    real vs programada, puntualidad al minuto, y deuda acumulada en el rango."""
-    if df_malla.empty or df_log.empty:
-        return pd.DataFrame()
-
-    malla = df_malla.groupby([col_asesor, "Fecha", "Campo"], as_index=False).agg(
-        Hora_Entrada=("Hora_Entrada", "first"),
-        Hora_Salida=("Hora_Salida", "first"),
-        Horas_Programadas_Min=("Horas_Programadas_Min", "sum"),
-    )
-    log = df_log.groupby([col_asesor, "Fecha"], as_index=False).agg(
-        Primera_Entrada=("Primera_Entrada", "first"),
-        Ultima_Salida=("Ultima_Salida", "first"),
-        Tiempo_Real_Linea_Min=("Tiempo_Real_Linea_Min", "sum"),
-    )
-
-    resumen = malla.merge(log, on=[col_asesor, "Fecha"], how="left")
-
-    def _td(col):
-        return pd.to_timedelta(resumen[col].astype("string"), errors="coerce")
-
-    ent_prog, ent_real = _td("Hora_Entrada"), _td("Primera_Entrada")
-    sal_prog, sal_real = _td("Hora_Salida"), _td("Ultima_Salida")
+    """Reporte único de adherencia: entrada/salida real vs. programado,
+    cumplimiento de almuerzo y cumplimiento de pausas (Baño/Breaks/Pausas
+    Activas), todo en filas tipo 'Concepto' con el tiempo que debe el asesor
+    (columna Deuda_Min) para poder totalizar por asesor en el rango."""
     tolerancia = pd.to_timedelta(f"{tolerancia_seg}s")
 
-    def _fmt_hhmmss(td):
+    def _fmt_td(td):
         if pd.isna(td):
             return ""
         total_seg = int(td.total_seconds())
@@ -829,75 +775,105 @@ def construir_resumen_adherencia_simple(
         m, s = divmod(resto, 60)
         return f"{h:02d}:{m:02d}:{s:02d}"
 
-    def _fmt_hhmmss_deuda(minutos):
-        if minutos <= 0:
-            return "00:00:00"
-        total_seg = int(round(minutos * 60))
-        h, resto = divmod(total_seg, 3600)
-        m, s = divmod(resto, 60)
-        return f"{h:02d}:{m:02d}:{s:02d}"
+    filas = []
 
-    minutos_tarde, estado_llegada = [], []
-    for p, r in zip(ent_prog, ent_real):
-        if pd.isna(r):
-            minutos_tarde.append(0.0)
-            estado_llegada.append("⚠️ Sin registro")
-            continue
-        diff = r - p
-        if diff <= tolerancia:
-            minutos_tarde.append(0.0)
-            estado_llegada.append("✅ A tiempo")
-        else:
-            mins = diff.total_seconds() / 60.0
-            minutos_tarde.append(mins)
-            estado_llegada.append(f"🔴 Tarde +{_fmt_hhmmss_deuda(mins)}")
+    # --- Entrada / Salida real vs. programado ---
+    if not df_malla.empty and not df_log.empty:
+        malla = df_malla.groupby([col_asesor, "Fecha"], as_index=False).agg(
+            Hora_Entrada=("Hora_Entrada", "first"),
+            Hora_Salida=("Hora_Salida", "first"),
+        )
+        log_es = df_log.groupby([col_asesor, "Fecha"], as_index=False).agg(
+            Primera_Entrada=("Primera_Entrada", "first"),
+            Ultima_Salida=("Ultima_Salida", "first"),
+        )
+        cruce = malla.merge(log_es, on=[col_asesor, "Fecha"], how="left")
 
-    minutos_temprano, estado_salida = [], []
-    for p, r in zip(sal_prog, sal_real):
-        if pd.isna(r):
-            minutos_temprano.append(0.0)
-            estado_salida.append("⚠️ Sin registro")
-            continue
-        diff = p - r
-        if diff <= tolerancia:
-            minutos_temprano.append(0.0)
-            estado_salida.append("✅ Cumplió")
-        else:
-            mins = diff.total_seconds() / 60.0
-            minutos_temprano.append(mins)
-            estado_salida.append(f"🔴 Se fue -{_fmt_hhmmss_deuda(mins)}")
+        def _td(col):
+            return pd.to_timedelta(cruce[col].astype("string"), errors="coerce")
 
-    resumen["Entrada_Prog"] = [_fmt_hhmmss(t) for t in ent_prog]
-    resumen["Entrada_Real"] = [_fmt_hhmmss(t) for t in ent_real]
-    resumen["Llegada"] = estado_llegada
+        ent_prog, ent_real = _td("Hora_Entrada"), _td("Primera_Entrada")
+        sal_prog, sal_real = _td("Hora_Salida"), _td("Ultima_Salida")
 
-    resumen["Salida_Prog"] = [_fmt_hhmmss(t) for t in sal_prog]
-    resumen["Salida_Real"] = [_fmt_hhmmss(t) for t in sal_real]
-    resumen["Salida"] = estado_salida
+        for i in range(len(cruce)):
+            asesor, fecha = cruce[col_asesor].iat[i], cruce["Fecha"].iat[i]
+            p_e, r_e = ent_prog.iat[i], ent_real.iat[i]
+            p_s, r_s = sal_prog.iat[i], sal_real.iat[i]
 
-    resumen["_deuda_dia_min"] = [t + s for t, s in zip(minutos_tarde, minutos_temprano)]
-    resumen["Debe_Tiempo"] = resumen["_deuda_dia_min"].map(
-        lambda v: "✅ Cumplido" if v <= 0 else f"🔴 Debe {_fmt_hhmmss_deuda(v)}"
-    )
+            if pd.isna(r_e):
+                estado, deuda = "⚠️ Sin registro", 0.0
+            else:
+                diff = r_e - p_e
+                if diff <= tolerancia:
+                    estado, deuda = "✅ A tiempo", 0.0
+                else:
+                    deuda = diff.total_seconds() / 60.0
+                    estado = f"🔴 Tarde +{_fmt_hhmmss_min(deuda)}"
+            filas.append({
+                "Asesor": asesor, "Fecha": fecha, "Concepto": "Llegada",
+                "Real": _fmt_td(r_e), "Permitido": _fmt_td(p_e),
+                "Estado": estado, "Deuda_Min": deuda,
+            })
 
-    acumulado = (
-        resumen.groupby(col_asesor, as_index=False)["_deuda_dia_min"]
-        .sum()
-        .rename(columns={"_deuda_dia_min": "_acumulado_min"})
-    )
-    resumen = resumen.merge(acumulado, on=col_asesor, how="left")
-    resumen["Acumulado_Rango"] = resumen["_acumulado_min"].map(_fmt_hhmmss_deuda)
+            if pd.isna(r_s):
+                estado, deuda = "⚠️ Sin registro", 0.0
+            else:
+                diff = p_s - r_s
+                if diff <= tolerancia:
+                    estado, deuda = "✅ Cumplió", 0.0
+                else:
+                    deuda = diff.total_seconds() / 60.0
+                    estado = f"🔴 Se fue -{_fmt_hhmmss_min(deuda)}"
+            filas.append({
+                "Asesor": asesor, "Fecha": fecha, "Concepto": "Salida",
+                "Real": _fmt_td(r_s), "Permitido": _fmt_td(p_s),
+                "Estado": estado, "Deuda_Min": deuda,
+            })
 
-    resumen["Fecha"] = pd.to_datetime(resumen["Fecha"]).dt.strftime("%d/%m/%Y")
+    # --- Almuerzo y pausas: mismo criterio, exceso sobre el tiempo permitido ---
+    limites_todos = {**LIMITES_ALMUERZO_MIN, **LIMITES_PAUSAS_MIN}
+    cols_presentes = [c for c in limites_todos if c in df_log.columns]
+    if not df_log.empty and cols_presentes:
+        agg = {c: (c, "sum") for c in cols_presentes}
+        log_cp = df_log.groupby([col_asesor, "Fecha"], as_index=False).agg(**agg)
 
-    salida = resumen[[
-        col_asesor, "Campo", "Fecha",
-        "Entrada_Prog", "Entrada_Real", "Llegada",
-        "Salida_Prog", "Salida_Real", "Salida",
-        "Debe_Tiempo", "Acumulado_Rango",
-    ]].rename(columns={col_asesor: "Asesor"})
+        for _, row in log_cp.iterrows():
+            for col in cols_presentes:
+                etiqueta, limite_min = limites_todos[col]
+                duracion_min = row.get(col) or 0.0
+                if duracion_min <= 0:
+                    continue
+                limite_seg = limite_min * 60 + tolerancia_seg
+                duracion_seg = duracion_min * 60
+                if duracion_seg <= limite_seg:
+                    estado, deuda = "✅ Cumplió", 0.0
+                else:
+                    deuda = (duracion_seg - limite_seg) / 60.0
+                    estado = f"🔴 Excedió +{_fmt_hhmmss_min(deuda)}"
+                filas.append({
+                    "Asesor": row[col_asesor], "Fecha": row["Fecha"], "Concepto": etiqueta,
+                    "Real": _fmt_hhmmss_min(duracion_min), "Permitido": _fmt_hhmmss_min(limite_min),
+                    "Estado": estado, "Deuda_Min": deuda,
+                })
 
-    return salida.sort_values(["Asesor", "Fecha"]).reset_index(drop=True)
+    resultado = pd.DataFrame(filas)
+    if resultado.empty:
+        return resultado
+
+    resultado["Fecha"] = pd.to_datetime(resultado["Fecha"]).dt.strftime("%d/%m/%Y")
+
+    # --- Novedad de Malla de Turno (texto libre, ~80 caracteres), por asesor/día ---
+    resultado["Novedad"] = ""
+    if not df_malla.empty and "Novedad" in df_malla.columns:
+        novedades = df_malla.groupby([col_asesor, "Fecha"], as_index=False).agg(
+            Novedad=("Novedad", lambda s: next((str(v) for v in s if str(v).strip() and str(v).lower() != "nan"), ""))
+        )
+        novedades["Fecha"] = pd.to_datetime(novedades["Fecha"]).dt.strftime("%d/%m/%Y")
+        novedades = novedades.rename(columns={col_asesor: "Asesor"})
+        resultado = resultado.drop(columns=["Novedad"]).merge(novedades, on=["Asesor", "Fecha"], how="left")
+        resultado["Novedad"] = resultado["Novedad"].fillna("")
+
+    return resultado.sort_values(["Asesor", "Fecha"]).reset_index(drop=True)
 
 
 def render_modulo_adherencia(db_path: str, catalogo: dict):
@@ -1033,7 +1009,7 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
     hoy = pd.Timestamp.now().date()
     fecha_default = hoy if min_f <= hoy <= max_f else max_f
     st.markdown("### 🔍 Filtros")
-    fl1, fl2, fl3 = st.columns(3)
+    fl1, fl2 = st.columns(2)
     with fl1:
         rango_log = st.date_input(
             "Rango de Fechas", value=(fecha_default, fecha_default), min_value=min_f, max_value=max_f, key="rango_date_adh",
@@ -1048,16 +1024,6 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
 
     with fl2:
         asesores_sel_log = st.multiselect("Asesor", options=asesores_log, key="asesores_sel_adh")
-
-    campos_log = []
-    if not df_log.empty and "Campo" in df_log.columns:
-        campos_log.extend(df_log["Campo"].dropna().unique())
-    if not df_malla.empty and "Campo" in df_malla.columns:
-        campos_log.extend(df_malla["Campo"].dropna().unique())
-    campos_log = sorted(list(set(campos_log)))
-
-    with fl3:
-        campos_sel_log = st.multiselect("Campo", options=campos_log, key="campos_sel_adh")
 
     if isinstance(rango_log, (tuple, list)):
         if len(rango_log) == 2:
@@ -1076,8 +1042,6 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
         df_log_f = df_log[(df_log["Fecha"] >= f_desde_dt) & (df_log["Fecha"] <= f_hasta_dt)].copy()
         if asesores_sel_log:
             df_log_f = df_log_f[df_log_f["Nombre_Asesor"].isin(asesores_sel_log)]
-        if campos_sel_log:
-            df_log_f = df_log_f[df_log_f["Campo"].isin(campos_sel_log)]
     else:
         df_log_f = df_log
 
@@ -1085,22 +1049,23 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
         df_malla_f = df_malla[(df_malla["Fecha"] >= f_desde_dt) & (df_malla["Fecha"] <= f_hasta_dt)].copy()
         if asesores_sel_log:
             df_malla_f = df_malla_f[df_malla_f["Nombre_Asesor"].isin(asesores_sel_log)]
-        if campos_sel_log:
-            df_malla_f = df_malla_f[df_malla_f["Campo"].isin(campos_sel_log)]
     else:
         df_malla_f = df_malla
 
     st.divider()
 
-    resumen_simple = construir_resumen_adherencia_simple(df_malla_f, df_log_f, col_asesor="Nombre_Asesor")
+    resumen_general = construir_reporte_adherencia_general(df_malla_f, df_log_f, col_asesor="Nombre_Asesor")
 
-    if resumen_simple.empty:
+    if resumen_general.empty:
         st.info("No hay coincidencias entre Malla de Turno y ControlNext Real para los filtros seleccionados.")
         return
-#------------------------------------------------
-# Cuadro resumen de adherencia simple (entrada/salida real vs programado)
-#-------------------------------------------------
-    st.markdown("### 📋 Entrada / Salida real vs. programado")
+
+    #------------------------------------------------
+    # Reporte Adherencia General (entrada/salida, almuerzo y pausas unificados)
+    #-------------------------------------------------
+    st.markdown("### 📋 Reporte Adherencia General")
+    st.caption("Entrada/salida real vs. programado, cumplimiento de almuerzo y de pausas (Baño/Breaks/Pausas Activas) en una sola vista.")
+
     badge_cell_style = JsCode("""
     function(params) {
         if (!params.value) return {};
@@ -1117,24 +1082,6 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
     }
     """)
 
-    grid_options_adh = {
-        "defaultColDef": {"sortable": True, "filter": True, "resizable": True},
-        "domLayout": "autoHeight",
-        "columnDefs": [
-            {"field": "Asesor", "headerName": "Asesor", "pinned": "left", "minWidth": 170},
-            {"field": "Campo", "headerName": "Campo", "minWidth": 110},
-            {"field": "Fecha", "headerName": "Fecha", "minWidth": 110},
-            {"field": "Entrada_Prog", "headerName": "Entrada Prog", "minWidth": 120},
-            {"field": "Entrada_Real", "headerName": "Entrada Real", "minWidth": 120},
-            {"field": "Llegada", "headerName": "Llegada", "cellStyle": badge_cell_style, "minWidth": 170},
-            {"field": "Salida_Prog", "headerName": "Salida Prog", "minWidth": 120},
-            {"field": "Salida_Real", "headerName": "Salida Real", "minWidth": 120},
-            {"field": "Salida", "headerName": "Salida", "cellStyle": badge_cell_style, "minWidth": 170},
-            {"field": "Debe_Tiempo", "headerName": "Debe (día)", "cellStyle": badge_cell_style, "minWidth": 170},
-            {"field": "Acumulado_Rango", "headerName": "Acumulado rango", "cellStyle": badge_cell_style, "minWidth": 180},
-        ],
-    }
-
     custom_css_adh = {
         ".ag-header": {"background-color": "#990011 !important"},
         ".ag-header-cell-label": {"color": "white !important", "font-weight": "600"},
@@ -1142,70 +1089,84 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
         ".ag-row-odd": {"background-color": "rgba(253,232,233,0.5) !important"},
     }
 
+    # Se agrega, al final de las filas de cada asesor, una fila "TOTAL RANGO"
+    # con la suma de todo lo que debe en el rango filtrado (mismo cuadro,
+    # misma descarga: no se separa en una tabla aparte).
+    detalle_cols = resumen_general[["Asesor", "Fecha", "Concepto", "Real", "Permitido", "Estado", "Novedad"]].copy()
+
+    totales = (
+        resumen_general.groupby("Asesor", as_index=False)["Deuda_Min"]
+        .sum()
+        .rename(columns={"Deuda_Min": "_total_min"})
+    )
+    fila_total = pd.DataFrame({
+        "Asesor": totales["Asesor"],
+        "Fecha": "",
+        "Concepto": "TOTAL RANGO",
+        "Real": "",
+        "Permitido": "",
+        "Estado": totales["_total_min"].map(
+            lambda v: "✅ Sin deuda" if v <= 0 else f"🔴 Debe {_fmt_hhmmss_min(v)}"
+        ),
+        "Novedad": "",
+    })
+
+    detalle_cols["_orden"] = 0
+    fila_total["_orden"] = 1
+    tabla_final = pd.concat([detalle_cols, fila_total], ignore_index=True)
+    tabla_final = tabla_final.sort_values(["Asesor", "_orden"], kind="stable").drop(columns=["_orden"]).reset_index(drop=True)
+
+    grid_options_gen = {
+        "defaultColDef": {"sortable": True, "filter": True, "resizable": True},
+        "columnDefs": [
+            {"field": "Asesor", "headerName": "Asesor", "pinned": "left", "minWidth": 170},
+            {"field": "Fecha", "headerName": "Fecha", "minWidth": 110},
+            {"field": "Concepto", "headerName": "Concepto", "minWidth": 150},
+            {"field": "Real", "headerName": "Real", "minWidth": 120},
+            {"field": "Permitido", "headerName": "Permitido", "minWidth": 120},
+            {"field": "Estado", "headerName": "Estado", "cellStyle": badge_cell_style, "minWidth": 180},
+            {"field": "Novedad", "headerName": "Novedad", "minWidth": 260, "wrapText": True, "autoHeight": True},
+        ],
+    }
+
+    # La fila "TOTAL RANGO" de cada asesor se resalta para que no se pierda
+    # en el scroll, quedando pegada justo debajo de las filas de ese asesor.
+    get_row_style = JsCode("""
+    function(params) {
+        if (params.data && params.data.Concepto === 'TOTAL RANGO') {
+            return {backgroundColor: '#fff3cd', fontWeight: '700', borderTop: '2px solid #990011'};
+        }
+        return {};
+    }
+    """)
+    grid_options_gen["getRowStyle"] = get_row_style
+
+    altura_fila = 34
+    altura_header = 46
+    altura_calculada = altura_header + altura_fila * len(tabla_final) + 10
+    altura_calculada = min(max(altura_calculada, 200), 600)
+
     AgGrid(
-        resumen_simple,
-        gridOptions=grid_options_adh,
+        tabla_final,
+        gridOptions=grid_options_gen,
         custom_css=custom_css_adh,
         allow_unsafe_jscode=True,
         fit_columns_on_grid_load=True,
         theme="alpine",
+        height=altura_calculada,
         update_mode="NO_UPDATE",
-        key="grid_adherencia_simple",
+        key="grid_adherencia_general",
     )
-    st.caption(f"{resumen_simple['Asesor'].nunique()} asesores · {len(resumen_simple)} filas mostradas")
+    st.caption(f"{resumen_general['Asesor'].nunique()} asesores · {len(tabla_final)} filas mostradas (incluye total por asesor)")
 
-    csv_bytes = resumen_simple.to_csv(index=False).encode("utf-8")
+    csv_bytes_gen = tabla_final.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="Descargar resumen de adherencia (CSV)",
-        data=csv_bytes,
-        file_name=f"adherencia_{f_desde}_a_{f_hasta}.csv",
+        label="Descargar Reporte Adherencia General (CSV)",
+        data=csv_bytes_gen,
+        file_name=f"adherencia_general_{f_desde}_a_{f_hasta}.csv",
         mime="text/csv",
-        key="btn_descargar_adherencia_simple",
+        key="btn_descargar_adherencia_general",
     )
-
-    #------------------------------------------------
-    # Cuadro de validación de tiempos de almuerzo por tipo
-    #-------------------------------------------------
-    resumen_almuerzo = construir_resumen_almuerzo(df_log_f, col_asesor="Nombre_Asesor")
-
-    if not resumen_almuerzo.empty:
-        st.markdown("### 🍽️ Cumplimiento de tiempo de almuerzo")
-        st.caption("Se valida el tipo de almuerzo registrado (1 hora / 40 min / 30 min) contra el tiempo permitido.")
-
-        grid_options_alm = {
-            "defaultColDef": {"sortable": True, "filter": True, "resizable": True},
-            "domLayout": "autoHeight",
-            "columnDefs": [
-                {"field": "Asesor", "headerName": "Asesor", "pinned": "left", "minWidth": 170},
-                {"field": "Campo", "headerName": "Campo", "minWidth": 110},
-                {"field": "Fecha", "headerName": "Fecha", "minWidth": 110},
-                {"field": "Tipo_Almuerzo", "headerName": "Tipo de Almuerzo", "minWidth": 150},
-                {"field": "Duracion_Real", "headerName": "Duración Real", "minWidth": 130},
-                {"field": "Tiempo_Permitido", "headerName": "Tiempo Permitido", "minWidth": 140},
-                {"field": "Estado", "headerName": "Estado", "cellStyle": badge_cell_style, "minWidth": 170},
-            ],
-        }
-
-        AgGrid(
-            resumen_almuerzo,
-            gridOptions=grid_options_alm,
-            custom_css=custom_css_adh,
-            allow_unsafe_jscode=True,
-            fit_columns_on_grid_load=True,
-            theme="alpine",
-            update_mode="NO_UPDATE",
-            key="grid_adherencia_almuerzo",
-        )
-        st.caption(f"{resumen_almuerzo['Asesor'].nunique()} asesores · {len(resumen_almuerzo)} filas mostradas")
-
-        csv_bytes_alm = resumen_almuerzo.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="Descargar cumplimiento de almuerzo (CSV)",
-            data=csv_bytes_alm,
-            file_name=f"almuerzo_{f_desde}_a_{f_hasta}.csv",
-            mime="text/csv",
-            key="btn_descargar_adherencia_almuerzo",
-        )
 
 # ===========================================================================
 # Sección Pagos x Asesor (UI completa)
