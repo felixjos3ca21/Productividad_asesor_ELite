@@ -10,6 +10,9 @@ venv/
 *.json
 **/*.json
 !productividad_view.json
+!asesores_catalogo.json
+!asesores_baguer.json
+!asesores_dupree.json
 *.xls
 
 # Python cache/artifacts
@@ -30,3 +33,5 @@ __pycache__/
 Thumbs.db
 .vscode/
 gestiones.db
+gestiones_baguer.db
+gestiones_dupree.db
