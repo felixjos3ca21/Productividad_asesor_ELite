@@ -145,6 +145,9 @@ CREATE TABLE IF NOT EXISTS reporte_logueo (
     Llamadas_No_Contestadas INTEGER,
     Tiempo_Total_Llamada_Min REAL,
     Almuerzo_Min        REAL,
+    Almuerzo_1Hora_Min  REAL,
+    Almuerzo_40Min_Min  REAL,
+    Almuerzo_30Min_Min  REAL,
     Bano_Min            REAL,
     Break10_Min         REAL,
     Break15_Min         REAL,
@@ -298,8 +301,22 @@ def inicializar_db(db_path: str) -> sqlite3.Connection:
     con.execute(DDL_PAGOS_X_ASESOR)
     con.execute(DDL_MALLA_TURNO)
     con.execute(DDL_REPORTE_LOGUEO)
+    _migrar_columnas_reporte_logueo(con)
     con.commit()
     return con
+
+
+def _migrar_columnas_reporte_logueo(con: sqlite3.Connection) -> None:
+    """Agrega columnas nuevas a reporte_logueo si la tabla ya existía de antes."""
+    columnas_existentes = {fila[1] for fila in con.execute("PRAGMA table_info(reporte_logueo)").fetchall()}
+    columnas_nuevas = {
+        "Almuerzo_1Hora_Min": "REAL",
+        "Almuerzo_40Min_Min": "REAL",
+        "Almuerzo_30Min_Min": "REAL",
+    }
+    for nombre, tipo in columnas_nuevas.items():
+        if nombre not in columnas_existentes:
+            con.execute(f"ALTER TABLE reporte_logueo ADD COLUMN {nombre} {tipo}")
 
 def leer_carpeta_pagos(carpeta: str) -> pd.DataFrame:
     carpeta = Path(carpeta)

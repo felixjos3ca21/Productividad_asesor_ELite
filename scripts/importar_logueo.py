@@ -190,8 +190,19 @@ def normalizar_logueo_controlnext(df_raw: pd.DataFrame, catalogo: dict, origen: 
     df["Tiempo_Total_Llamada_Min"] = df[col_tt_llam].apply(_convertir_hhmmss_a_minutos) if col_tt_llam else 0.0
 
     # Pausas y Auxiliares
-    col_alm = _buscar_columna(df, ["almuerzo_duracion", "almuerzo"])
-    df["Almuerzo_Min"] = df[col_alm].apply(_convertir_hhmmss_a_minutos) if col_alm else 0.0
+    # El almuerzo viene dividido en varios tipos (1 hora / 40 min / 30 min); se
+    # guarda cada tipo por separado (para validar el tiempo permitido de cada uno)
+    # y también un total sumado (Almuerzo_Min) para compatibilidad.
+    col_alm_1h = _buscar_columna(df, ["almuerzo 1 hora_duracion", "almuerzo_duracion", "almuerzo"])
+    df["Almuerzo_1Hora_Min"] = df[col_alm_1h].apply(_convertir_hhmmss_a_minutos) if col_alm_1h else 0.0
+
+    col_alm_40 = _buscar_columna(df, ["almuerzo 40 min_duracion"])
+    df["Almuerzo_40Min_Min"] = df[col_alm_40].apply(_convertir_hhmmss_a_minutos) if col_alm_40 else 0.0
+
+    col_alm_30 = _buscar_columna(df, ["amuerzo 30 min_duracion", "almuerzo 30 min_duracion"])
+    df["Almuerzo_30Min_Min"] = df[col_alm_30].apply(_convertir_hhmmss_a_minutos) if col_alm_30 else 0.0
+
+    df["Almuerzo_Min"] = df["Almuerzo_1Hora_Min"] + df["Almuerzo_40Min_Min"] + df["Almuerzo_30Min_Min"]
 
     col_bano = _buscar_columna(df, ["baño_duracion", "baño", "bano"])
     df["Bano_Min"] = df[col_bano].apply(_convertir_hhmmss_a_minutos) if col_bano else 0.0
@@ -232,7 +243,8 @@ def normalizar_logueo_controlnext(df_raw: pd.DataFrame, catalogo: dict, origen: 
         "Primera_Entrada", "Ultima_Salida", "Primera_Gestion", "Ultima_Gestion",
         "Tiempo_Real_Linea_Min", "Numero_Sesiones", "Total_Llamadas",
         "Llamadas_Contestadas", "Llamadas_No_Contestadas", "Tiempo_Total_Llamada_Min",
-        "Almuerzo_Min", "Bano_Min", "Break10_Min", "Break15_Min",
+        "Almuerzo_Min", "Almuerzo_1Hora_Min", "Almuerzo_40Min_Min", "Almuerzo_30Min_Min",
+        "Bano_Min", "Break10_Min", "Break15_Min",
         "Capacitacion_Min", "PausasActivas_Min", "Tiempo_Muerto_Min",
         "origen_archivo"
     ]
@@ -282,7 +294,8 @@ def insertar_logueo(con: sqlite3.Connection, df: pd.DataFrame) -> int:
         "Primera_Entrada", "Ultima_Salida", "Primera_Gestion", "Ultima_Gestion",
         "Tiempo_Real_Linea_Min", "Numero_Sesiones", "Total_Llamadas",
         "Llamadas_Contestadas", "Llamadas_No_Contestadas", "Tiempo_Total_Llamada_Min",
-        "Almuerzo_Min", "Bano_Min", "Break10_Min", "Break15_Min",
+        "Almuerzo_Min", "Almuerzo_1Hora_Min", "Almuerzo_40Min_Min", "Almuerzo_30Min_Min",
+        "Bano_Min", "Break10_Min", "Break15_Min",
         "Capacitacion_Min", "PausasActivas_Min", "Tiempo_Muerto_Min",
         "origen_archivo"
     ]

@@ -12,7 +12,7 @@ st.set_page_config(page_title="Elite Abogados BPO", layout="wide", page_icon=str
 fondo_logo()
 
 pagina_productividad = st.Page(
-    "Pages/01_productividad_CLARO.py",
+    "Pages/01_Productividad_CLARO.py",
     title="Productividad CLARO",
     icon=":material/insights:",
     default=True,
@@ -24,14 +24,14 @@ pagina_productividad = st.Page(
     #     icon=":material/monetization_on:",
     # )
 pagina_productividad_baguer = st.Page(
-    "Pages/03_productividad_BAGUER.py",
+    "Pages/03_Productividad_BAGUER.py",
     title="Productividad BAGUER",
     icon=":material/insights:",
     
 )
 
 pagina_productividad_dupree = st.Page(
-    "Pages/04_productividad_DUPREE.py",
+    "Pages/04_Productividad_DUPREE.py",
     title="Productividad DUPREE",
     icon=":material/insights:", 
     

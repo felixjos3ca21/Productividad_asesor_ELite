@@ -731,6 +731,65 @@ def graficar_combo_mensual(resumen_diario: pd.DataFrame):
 # Sección Adherencia (UI completa)
 # ===========================================================================
 
+# Tiempo permitido (en minutos) por tipo de almuerzo.
+LIMITES_ALMUERZO_MIN = {
+    "Almuerzo_1Hora_Min": ("Almuerzo 1 Hora", 60),
+    "Almuerzo_40Min_Min": ("Almuerzo 40 Min", 40),
+    "Almuerzo_30Min_Min": ("Almuerzo 30 Min", 30),
+}
+
+
+def construir_resumen_almuerzo(
+    df_log: pd.DataFrame,
+    col_asesor: str = "Nombre_Asesor",
+    tolerancia_seg: int = 20,
+) -> pd.DataFrame:
+    """Valida, por asesor y día, si el tiempo tomado en el tipo de almuerzo
+    registrado (1 hora / 40 min / 30 min) se pasó del límite permitido."""
+    cols_almuerzo = [c for c in LIMITES_ALMUERZO_MIN if c in df_log.columns]
+    if df_log.empty or not cols_almuerzo:
+        return pd.DataFrame()
+
+    agg = {c: (c, "sum") for c in cols_almuerzo}
+    log = df_log.groupby([col_asesor, "Fecha", "Campo"], as_index=False).agg(**agg)
+
+    def _fmt_hhmmss(minutos):
+        total_seg = int(round(minutos * 60))
+        h, resto = divmod(total_seg, 3600)
+        m, s = divmod(resto, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    filas = []
+    for _, row in log.iterrows():
+        for col, (etiqueta, limite_min) in LIMITES_ALMUERZO_MIN.items():
+            duracion_min = row.get(col) or 0.0
+            if duracion_min <= 0:
+                continue
+            limite_seg = limite_min * 60 + tolerancia_seg
+            duracion_seg = duracion_min * 60
+            if duracion_seg <= limite_seg:
+                estado = "✅ Cumplió"
+            else:
+                exceso_min = (duracion_seg - limite_seg) / 60.0
+                estado = f"🔴 Excedió +{_fmt_hhmmss(exceso_min)}"
+            filas.append({
+                "Asesor": row[col_asesor],
+                "Campo": row["Campo"],
+                "Fecha": row["Fecha"],
+                "Tipo_Almuerzo": etiqueta,
+                "Duracion_Real": _fmt_hhmmss(duracion_min),
+                "Tiempo_Permitido": _fmt_hhmmss(limite_min),
+                "Estado": estado,
+            })
+
+    resultado = pd.DataFrame(filas)
+    if resultado.empty:
+        return resultado
+
+    resultado["Fecha"] = pd.to_datetime(resultado["Fecha"]).dt.strftime("%d/%m/%Y")
+    return resultado.sort_values(["Asesor", "Fecha"]).reset_index(drop=True)
+
+
 def construir_resumen_adherencia_simple(
     df_malla: pd.DataFrame,
     df_log: pd.DataFrame,
@@ -1104,6 +1163,50 @@ def render_modulo_adherencia(db_path: str, catalogo: dict):
         key="btn_descargar_adherencia_simple",
     )
 
+    #------------------------------------------------
+    # Cuadro de validación de tiempos de almuerzo por tipo
+    #-------------------------------------------------
+    resumen_almuerzo = construir_resumen_almuerzo(df_log_f, col_asesor="Nombre_Asesor")
+
+    if not resumen_almuerzo.empty:
+        st.markdown("### 🍽️ Cumplimiento de tiempo de almuerzo")
+        st.caption("Se valida el tipo de almuerzo registrado (1 hora / 40 min / 30 min) contra el tiempo permitido.")
+
+        grid_options_alm = {
+            "defaultColDef": {"sortable": True, "filter": True, "resizable": True},
+            "domLayout": "autoHeight",
+            "columnDefs": [
+                {"field": "Asesor", "headerName": "Asesor", "pinned": "left", "minWidth": 170},
+                {"field": "Campo", "headerName": "Campo", "minWidth": 110},
+                {"field": "Fecha", "headerName": "Fecha", "minWidth": 110},
+                {"field": "Tipo_Almuerzo", "headerName": "Tipo de Almuerzo", "minWidth": 150},
+                {"field": "Duracion_Real", "headerName": "Duración Real", "minWidth": 130},
+                {"field": "Tiempo_Permitido", "headerName": "Tiempo Permitido", "minWidth": 140},
+                {"field": "Estado", "headerName": "Estado", "cellStyle": badge_cell_style, "minWidth": 170},
+            ],
+        }
+
+        AgGrid(
+            resumen_almuerzo,
+            gridOptions=grid_options_alm,
+            custom_css=custom_css_adh,
+            allow_unsafe_jscode=True,
+            fit_columns_on_grid_load=True,
+            theme="alpine",
+            update_mode="NO_UPDATE",
+            key="grid_adherencia_almuerzo",
+        )
+        st.caption(f"{resumen_almuerzo['Asesor'].nunique()} asesores · {len(resumen_almuerzo)} filas mostradas")
+
+        csv_bytes_alm = resumen_almuerzo.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Descargar cumplimiento de almuerzo (CSV)",
+            data=csv_bytes_alm,
+            file_name=f"almuerzo_{f_desde}_a_{f_hasta}.csv",
+            mime="text/csv",
+            key="btn_descargar_adherencia_almuerzo",
+        )
+
 # ===========================================================================
 # Sección Pagos x Asesor (UI completa)
 # ===========================================================================
@@ -1281,17 +1384,14 @@ def render_modulo_pagos_asesor(db_path: str):
     fig.update_layout(hovermode="x unified")
     st.plotly_chart(fig, width="stretch")
 
-    # NOTA: esto queda tal cual estaba en tu archivo original — filtra siempre
-    # agosto (mes == 8) sin importar el rango de fechas elegido arriba.
-    # Si no era intencional, dímelo y lo cambiamos para que use el rango filtrado.
     resumen_mes = (
-        base[base["fecha_pago"].dt.month == 8]
-        .groupby(base["fecha_pago"].dt.day)["valor_pago"]
+        base.groupby(base["fecha_pago"].dt.day)["valor_pago"]
         .sum()
         .reset_index()
+        .rename(columns={"fecha_pago": "dia_pago"})
     )
     st.write(resumen_mes)
-    st.write("Total agosto:", resumen_mes["valor_pago"].sum())
+    st.write("Total del periodo filtrado:", resumen_mes["valor_pago"].sum())
 
     # ── Meta por asesor ─────────────────────────────────────────────────
     st.markdown("### Meta por asesor")

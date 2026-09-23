@@ -1,4 +1,9 @@
 streamlit
 pandas
+numpy
 matplotlib
+plotly
 openpyxl
+xlrd
+Pillow
+streamlit-aggrid
