@@ -173,7 +173,8 @@ def barra_azul_monto(v: float, minimo: float, maximo: float) -> str:
         pos_rel = (v - minimo) / rango
         nivel = int(pos_rel * 4) + 1
         nivel = max(1, min(5, nivel))
-    return "🟦" * nivel + "⬜" * (5 - nivel)
+    gradiente = ["🟥", "🟧", "🟨", "🟩", "🟩"]
+    return "".join(gradiente[:nivel]) + "⬜" * (5 - nivel)
 
 
 # ===========================================================================
@@ -451,12 +452,12 @@ def render_matriz_html(df: pd.DataFrame) -> str:
         return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     encabezados = "".join(
-        f'<th style="font-size:1.05rem !important;">{_e(c)}</th>' for c in df.columns
+        f'<th style="font-size:0.9rem !important;">{_e(c)}</th>' for c in df.columns
     )
     filas = []
     for _, row in df.iterrows():
         celdas = "".join(
-            f'<td style="font-size:0.95rem !important;">{_e(v)}</td>' for v in row.values
+            f'<td style="font-size:0.85rem !important;">{_e(v)}</td>' for v in row.values
         )
         filas.append(f"<tr>{celdas}</tr>")
     cuerpo = "".join(filas)
@@ -689,6 +690,145 @@ def construir_resumen_mensual_promesa(base_filtrada: pd.DataFrame) -> pd.DataFra
     resumen["cantidad_acuerdos"] = resumen["cantidad_acuerdos"].astype(int)
     resumen = resumen.rename(columns={"FechaPromesa": "Fecha"}).sort_values("Fecha")
     return resumen
+
+
+# ===========================================================================
+# Efectividad Promesa -> Pago (cruce gestiones x pagos_x_asesor)
+# ===========================================================================
+
+def _normalizar_cuenta(serie: pd.Series) -> pd.Series:
+    return (
+        serie.astype("string")
+        .str.replace("-", "", regex=False)
+        .str.replace(".", "", regex=False)
+        .str.strip()
+        .str.upper()
+    )
+
+
+def calcular_efectividad_promesas_pagos(
+    df_gestiones: pd.DataFrame,
+    df_pagos: pd.DataFrame,
+    fecha_desde,
+    fecha_hasta,
+) -> pd.DataFrame:
+    """Cruza las promesas de pago registradas en gestiones (dentro del rango de
+    FechaPromesa indicado) con los pagos reales de pagos_x_asesor.
+
+    Regla de cruce: cada pago se asigna a la promesa de esa misma Cuenta cuya
+    FechaPromesa sea la mas cercana e inmediatamente anterior (o igual) a la
+    fecha de pago. Si una cuenta tuvo promesas de varios asesores, el credito
+    del pago es para el asesor de la promesa mas cercana. Si un pago no tiene
+    ninguna promesa previa dentro del rango, no se asigna a nadie (para no
+    inflar la efectividad con coincidencias sin relacion real).
+    """
+    columnas_salida = [
+        "Nombre_Asesor", "Cantidad_Promesas", "Valor_Promesa",
+        "Cantidad_Pagos", "Capital", "Efectividad", "%_Recuperado",
+    ]
+
+    if df_gestiones is None or df_gestiones.empty or df_pagos is None or df_pagos.empty:
+        return pd.DataFrame(columns=columnas_salida)
+
+    if "ultimo_perfil_cliente" not in df_gestiones.columns or "FechaPromesa" not in df_gestiones.columns:
+        return pd.DataFrame(columns=columnas_salida)
+
+    col_asesor = "Nombre_Asesor" if "Nombre_Asesor" in df_gestiones.columns else "asesor_gestion"
+    if col_asesor not in df_gestiones.columns or "Cuenta" not in df_gestiones.columns:
+        return pd.DataFrame(columns=columnas_salida)
+
+    if "cuenta" not in df_pagos.columns or "fecha_pago" not in df_pagos.columns or "valor_pago" not in df_pagos.columns:
+        return pd.DataFrame(columns=columnas_salida)
+
+    perfiles_promesas = {"promesa de pago", "promesa de pago con descuento", "promesa con tercero"}
+    perfil_norm = df_gestiones["ultimo_perfil_cliente"].astype("string").str.strip().str.lower()
+    mask_promesas = perfil_norm.isin(perfiles_promesas)
+
+    col_valorpromesa = (
+        "valorpromesa" if "valorpromesa" in df_gestiones.columns
+        else "valor_promesa" if "valor_promesa" in df_gestiones.columns
+        else None
+    )
+
+    cols_promesas = [col_asesor, "Cuenta", "FechaPromesa"] + ([col_valorpromesa] if col_valorpromesa else [])
+    base_promesas = (
+        df_gestiones.loc[mask_promesas, cols_promesas]
+        .rename(columns={col_asesor: "Nombre_Asesor"})
+        .dropna(subset=["Cuenta", "FechaPromesa", "Nombre_Asesor"])
+        .copy()
+    )
+    base_promesas["Cuenta"] = _normalizar_cuenta(base_promesas["Cuenta"])
+
+    f_desde = pd.to_datetime(fecha_desde)
+    f_hasta = pd.to_datetime(fecha_hasta)
+    base_promesas = base_promesas[
+        (base_promesas["FechaPromesa"] >= f_desde) & (base_promesas["FechaPromesa"] <= f_hasta)
+    ]
+
+    if col_valorpromesa:
+        base_promesas[col_valorpromesa] = pd.to_numeric(base_promesas[col_valorpromesa], errors="coerce")
+        base_promesas = (
+            base_promesas.groupby(["Cuenta", "Nombre_Asesor", "FechaPromesa"], as_index=False)[col_valorpromesa]
+            .min()
+            .rename(columns={col_valorpromesa: "valor_promesa"})
+        )
+    else:
+        base_promesas = base_promesas.drop_duplicates(subset=["Cuenta", "Nombre_Asesor", "FechaPromesa"])
+        base_promesas["valor_promesa"] = 0.0
+
+    if base_promesas.empty:
+        return pd.DataFrame(columns=columnas_salida)
+
+    cantidad_promesas = base_promesas.groupby("Nombre_Asesor", as_index=False).agg(
+        Cantidad_Promesas=("Cuenta", "count"),
+        Valor_Promesa=("valor_promesa", "sum"),
+    )
+
+    base_pagos = df_pagos[["cuenta", "fecha_pago", "valor_pago"]].dropna(subset=["cuenta", "fecha_pago"]).copy()
+    base_pagos = base_pagos.rename(columns={"cuenta": "Cuenta"})
+    base_pagos["Cuenta"] = _normalizar_cuenta(base_pagos["Cuenta"])
+    base_pagos["valor_pago"] = pd.to_numeric(base_pagos["valor_pago"], errors="coerce")
+    base_pagos = base_pagos.dropna(subset=["valor_pago"])
+
+    cuentas_validas = set(base_promesas["Cuenta"].unique())
+    base_pagos = base_pagos[base_pagos["Cuenta"].isin(cuentas_validas)]
+
+    resultado = cantidad_promesas.copy()
+    if base_pagos.empty:
+        resultado["Cantidad_Pagos"] = 0
+        resultado["Capital"] = 0.0
+    else:
+        izquierda = base_pagos.sort_values("fecha_pago").reset_index(drop=True)
+        derecha = base_promesas.sort_values("FechaPromesa").reset_index(drop=True)
+
+        cruce = pd.merge_asof(
+            izquierda,
+            derecha,
+            left_on="fecha_pago",
+            right_on="FechaPromesa",
+            by="Cuenta",
+            direction="backward",
+        )
+        cruce_valido = cruce.dropna(subset=["Nombre_Asesor"])
+
+        resumen_pagos = cruce_valido.groupby("Nombre_Asesor", as_index=False).agg(
+            Cantidad_Pagos=("valor_pago", "count"),
+            Capital=("valor_pago", "sum"),
+        )
+        resultado = resultado.merge(resumen_pagos, on="Nombre_Asesor", how="left")
+        resultado["Cantidad_Pagos"] = resultado["Cantidad_Pagos"].fillna(0).astype(int)
+        resultado["Capital"] = resultado["Capital"].fillna(0.0)
+
+    resultado["Efectividad"] = resultado.apply(
+        lambda r: (r["Cantidad_Pagos"] / r["Cantidad_Promesas"] * 100) if r["Cantidad_Promesas"] else 0.0,
+        axis=1,
+    )
+    resultado["%_Recuperado"] = resultado.apply(
+        lambda r: (r["Capital"] / r["Valor_Promesa"] * 100) if r["Valor_Promesa"] else 0.0,
+        axis=1,
+    )
+
+    return resultado.sort_values("Cantidad_Promesas", ascending=False).reset_index(drop=True)[columnas_salida]
 
 
 def graficar_combo_mensual(resumen_diario: pd.DataFrame):
@@ -1190,7 +1330,14 @@ def cargar_pagos_desde_sqlite(db_path: str, firma_db_val: tuple) -> pd.DataFrame
         return pd.DataFrame()
 
 
-def render_modulo_pagos_asesor(db_path: str):
+@st.cache_data(show_spinner=False)
+def _imagen_a_base64(ruta: str) -> str:
+    import base64
+    with open(ruta, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+def render_modulo_pagos_asesor(db_path: str, df_gestiones: pd.DataFrame | None = None):
     st.markdown("### 💰 Pagos x Asesor")
     col_f1, col_f2, col_f3, = st.columns(3)
 
@@ -1375,7 +1522,22 @@ def render_modulo_pagos_asesor(db_path: str):
 
     marcas_texto = ", ".join(marcas_sel) if marcas_sel else "Todas"
     types_texto = ", ".join(types_sel) if types_sel else "Todos"
-    st.subheader(f"Resumen por asesor — Marca: {marcas_texto} | Tipo de Cliente: {types_texto}")
+
+    try:
+        _logo_elite_b64 = _imagen_a_base64("scripts/image/Elite_H_color.png")
+        _logo_claro_b64 = _imagen_a_base64("scripts/image/logo_claro.png")
+        st.markdown(
+            f"""
+            <div style='display:flex; align-items:center; justify-content:space-between; margin-top:8px; margin-bottom:8px;'>
+                <img src='data:image/png;base64,{_logo_elite_b64}' style='width:170px; object-fit:contain;'>
+                <h3 style='text-align:center; font-size:1.6rem; margin:0; flex:1;'>💰 Resumen por asesor — Marca: {marcas_texto} | Tipo de Cliente: {types_texto}</h3>
+                <img src='data:image/png;base64,{_logo_claro_b64}' style='width:80px; object-fit:contain;'>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        st.subheader(f"Resumen por asesor — Marca: {marcas_texto} | Tipo de Cliente: {types_texto}")
 
     resumen_asesor = resumen_asesor.sort_values("total_pagado", ascending=False).reset_index(drop=True)
     resumen_asesor["posicion"] = resumen_asesor.index + 1
@@ -1408,11 +1570,15 @@ def render_modulo_pagos_asesor(db_path: str):
     """)
 
     grid_options = {
-        "defaultColDef": {"sortable": True, "filter": True, "resizable": True},
+        "defaultColDef": {
+            "sortable": True, "filter": True, "resizable": True,
+            "headerClass": "header-centrado",
+            "cellStyle": {"textAlign": "center"},
+        },
         "columnDefs": [
             {"field": "posicion", "headerName": "Posición", "pinned": "left"},
-            {"field": "Nombre_Asesor", "headerName": "Asesor", "pinned": "left"},
-            {"field": "total_pagado", "headerName": "Total pagado", "valueFormatter": money_formatter, "type": ["numericColumn"]},
+            {"field": "Nombre_Asesor", "headerName": "Asesor", "pinned": "left", "cellStyle": {"textAlign": "center", "fontWeight": "700"}},
+            {"field": "total_pagado", "headerName": "Total pagado", "valueFormatter": money_formatter, "type": ["numericColumn"], "cellStyle": {"textAlign": "center", "fontWeight": "700"}},
             {"field": "meta", "headerName": "Meta", "valueFormatter": money_formatter, "type": ["numericColumn"]},
             {"field": "valor_faltante", "headerName": "Falta / Excedente", "valueFormatter": money_formatter, "type": ["numericColumn"]},
             {"field": "%_meta", "headerName": "Avance", "cellRenderer": progress_renderer, "type": ["numericColumn"]},
@@ -1426,6 +1592,10 @@ def render_modulo_pagos_asesor(db_path: str):
         ".ag-header-cell-label": {"color": "white !important", "font-weight": "600"},
         ".ag-row-even": {"background-color": "rgba(255,255,255,0.85) !important"},
         ".ag-row-odd": {"background-color": "rgba(253,232,233,0.5) !important"},
+        ".header-centrado .ag-header-cell-label": {
+            "justify-content": "center !important",
+            "font-weight": "700 !important",
+        },
     }
 
     altura_fila = 42
@@ -1477,6 +1647,112 @@ def render_modulo_pagos_asesor(db_path: str):
             key="btn_descargar_detalle_pagos",
         )
         st.caption(f"{len(detalle):,} pagos individuales bajo los filtros actuales".replace(",", "."))
+
+    st.divider()
+
+    # ── Efectividad Promesa -> Pago ──────────────────────────────────────
+    if df_gestiones is None or df_gestiones.empty:
+        st.info("No hay datos de gestiones cargados para calcular este cruce.")
+    else:
+        fecha_min_prom = df_gestiones["FechaPromesa"].min() if "FechaPromesa" in df_gestiones.columns else None
+        fecha_max_prom = df_gestiones["FechaPromesa"].max() if "FechaPromesa" in df_gestiones.columns else None
+
+        rango_promesa = st.date_input(
+            "Rango de fecha de promesa",
+            value=(fecha_min_prom, fecha_max_prom) if pd.notna(fecha_min_prom) else None,
+            key="filtro_fecha_promesa_efectividad",
+        )
+
+        try:
+            _logo_elite_b64 = _imagen_a_base64("scripts/image/Elite_H_color.png")
+            _logo_claro_b64 = _imagen_a_base64("scripts/image/logo_claro.png")
+            st.markdown(
+                f"""
+                <div style='display:flex; align-items:center; justify-content:space-between; margin-top:8px; margin-bottom:8px;'>
+                    <img src='data:image/png;base64,{_logo_elite_b64}' style='width:170px; object-fit:contain;'>
+                    <h3 style='text-align:center; font-size:1.6rem; margin:0; flex:1;'>🎯 Efectividad Promesa → Pago x Asesor</h3>
+                    <img src='data:image/png;base64,{_logo_claro_b64}' style='width:80px; object-fit:contain;'>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        except Exception:
+            st.markdown("### 🎯 Efectividad Promesa → Pago (por asesor)")
+
+        if isinstance(rango_promesa, tuple) and len(rango_promesa) == 2:
+            efectividad = calcular_efectividad_promesas_pagos(
+                df_gestiones, df_pagos, rango_promesa[0], rango_promesa[1]
+            )
+
+            if efectividad.empty:
+                st.info("No hay promesas en el rango seleccionado.")
+            else:
+                efectividad = efectividad.sort_values("Efectividad", ascending=False).reset_index(drop=True)
+                efectividad.insert(0, "posicion", efectividad.index + 1)
+
+                recuperado_renderer = JsCode("""
+                class RecuperadoBarRenderer {
+                    init(params) {
+                        this.eGui = document.createElement('div');
+                        const real = params.value == null ? 0 : params.value;
+                        const ancho = Math.min(Math.max(real, 0), 100);
+                        const t = ancho / 100;
+                        const r1 = 231, g1 = 76, b1 = 60;   // rojo
+                        const r2 = 241, g2 = 196, b2 = 15;  // amarillo
+                        const r = Math.round(r1 + (r2 - r1) * t);
+                        const g = Math.round(g1 + (g2 - g1) * t);
+                        const b = Math.round(b1 + (b2 - b1) * t);
+                        this.eGui.innerHTML = `
+                            <div style="background:#e2e8f0;border-radius:4px;height:18px;width:100%;position:relative;">
+                                <div style="background:rgb(${r},${g},${b});width:${ancho}%;height:100%;border-radius:4px;"></div>
+                                <span style="position:absolute;inset:0;text-align:center;font-size:11px;line-height:18px;">${real.toFixed(0)}%</span>
+                            </div>`;
+                    }
+                    getGui() { return this.eGui; }
+                }
+                """)
+
+                grid_options_efect = {
+                    "defaultColDef": {
+                        "sortable": True, "filter": True, "resizable": True,
+                        "headerClass": "header-centrado",
+                        "cellStyle": {"textAlign": "center"},
+                    },
+                    "columnDefs": [
+                        {"field": "posicion", "headerName": "Posición", "pinned": "left"},
+                        {"field": "Nombre_Asesor", "headerName": "Asesor", "pinned": "left", "cellStyle": {"textAlign": "center", "fontWeight": "700"}},
+                        {"field": "Cantidad_Promesas", "headerName": "Cantidad Promesas", "type": ["numericColumn"]},
+                        {"field": "Cantidad_Pagos", "headerName": "Cantidad Pagos", "type": ["numericColumn"]},
+                        {"field": "Efectividad", "headerName": "Efectividad", "cellRenderer": progress_renderer, "type": ["numericColumn"]},
+                        {"field": "Valor_Promesa", "headerName": "Valor Promesa", "valueFormatter": money_formatter, "type": ["numericColumn"]},
+                        {"field": "Capital", "headerName": "Capital Recuperado", "valueFormatter": money_formatter, "type": ["numericColumn"], "cellStyle": {"textAlign": "center", "fontWeight": "700"}},
+                        {"field": "%_Recuperado", "headerName": "% Recuperado", "cellRenderer": recuperado_renderer, "type": ["numericColumn"]},
+                    ],
+                }
+
+                custom_css_efect = dict(custom_css)
+                custom_css_efect[".header-centrado .ag-header-cell-label"] = {
+                    "justify-content": "center !important",
+                    "font-weight": "700 !important",
+                }
+
+                altura_fila_e = 42
+                altura_header_e = 46
+                altura_calculada_e = min(altura_header_e + altura_fila_e * len(efectividad) + 10, 900)
+
+                AgGrid(
+                    efectividad,
+                    gridOptions=grid_options_efect,
+                    custom_css=custom_css_efect,
+                    allow_unsafe_jscode=True,
+                    fit_columns_on_grid_load=True,
+                    theme="alpine",
+                    height=altura_calculada_e,
+                    update_mode="NO_UPDATE",
+                    key="grid_efectividad_promesa_pago",
+                )
+        else:
+            st.info("Selecciona un rango de fechas completo (desde y hasta).")
 
 # ===========================================================================
 #Funciones de apoyyo para modulo de dupree

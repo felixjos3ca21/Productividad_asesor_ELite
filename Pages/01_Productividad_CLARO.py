@@ -212,7 +212,9 @@ elif seccion == "Adherencia":
 
 elif seccion == "Pagos x Asesor":
     render_actualizar_pagos_sidebar(_DB_PATH)
-    render_modulo_pagos_asesor(_DB_PATH)
+    df_gestiones_raw = cargar_desde_sqlite(_DB_PATH, firma_db(_DB_PATH))
+    df_gestiones_pagos = aplicar_homologacion(df_gestiones_raw, catalogo) if not df_gestiones_raw.empty else df_gestiones_raw
+    render_modulo_pagos_asesor(_DB_PATH, df_gestiones_pagos)
 
 
 st.markdown(
@@ -275,33 +277,31 @@ st.markdown(
 		letter-spacing: 0.05em;
 	}
 	.mat-tbl thead th {
-		padding: 14px 18px;
+		padding: 8px 14px;
 		text-align: center;
 		border-bottom: 2px solid #334155;
 		white-space: pre-line;
 		font-weight: 800;
-		line-height: 1.3;
+		line-height: 1.15;
 	}
-	.mat-tbl thead th:first-child { text-align: left; padding-left: 20px; }
+	.mat-tbl thead th:first-child { text-align: left; padding-left: 16px; }
 	.mat-tbl tbody tr:nth-child(odd)  { background: #19203a; }
 	.mat-tbl tbody tr:nth-child(even) { background: #1e2640; }
 	.mat-tbl tbody tr:hover           { background: #273155; transition: background 0.12s; }
 	.mat-tbl tbody td {
-		padding: 8px 12px;
+		padding: 4px 12px;
 		color: #e2e8f0;
 		font-weight: 600;
-		font-size: 1.6rem;
 		text-align: center;
 		border-bottom: 1px solid #242d47;
+		line-height: 1.2;
 	}
 	.mat-tbl tbody td:first-child {
 		text-align: left;
-		padding: 11px 16px 11px 20px;
+		padding: 5px 12px 5px 16px;
 		font-weight: 600;
 		color: #f8fafc;
-		font-size: 1.7rem;
 		max-width: 220px;
-		white-space: normal;
 	}
 	</style>
 	""",
@@ -445,10 +445,10 @@ if st.session_state["productividad_seccion"] == "Productividad":
 
 	st.markdown(
 		f"""
-		<div style='display:flex; align-items:center; justify-content:space-between; margin-top:15px; margin-bottom:15px;'>
-			<img src='data:image/png;base64,{_logo_elite_b64}' style='width:220px; object-fit:contain;'>
-			<h3 style='text-align:center; font-size:3.4rem; margin:0; flex:1;'>📊 Productividad x Asesor - Campaña CLARO &nbsp;&nbsp;·&nbsp;&nbsp; Actualizado: {_hora_actualiz}</h3>
-			<img src='data:image/png;base64,{_logo_claro_b64}' style='width:140px; object-fit:contain;'>
+		<div style='display:flex; align-items:center; justify-content:space-between; margin-top:8px; margin-bottom:8px;'>
+			<img src='data:image/png;base64,{_logo_elite_b64}' style='width:170px; object-fit:contain;'>
+			<h3 style='text-align:center; font-size:1.6rem; margin:0; flex:1;'>📊 Productividad x Asesor - Campaña CLARO &nbsp;&nbsp;·&nbsp;&nbsp; Actualizado: {_hora_actualiz}</h3>
+			<img src='data:image/png;base64,{_logo_claro_b64}' style='width:80px; object-fit:contain;'>
 		</div>
 		""",
 		unsafe_allow_html=True,
@@ -475,18 +475,17 @@ if st.session_state["productividad_seccion"] == "Productividad":
 			lambda r: f"{icono_semaforo_deberia(int(r['clientes_Gestionados']), float(r['deberia_llevar']))} {int(r['clientes_Gestionados']):,}".replace(",", "."),
 			axis=1,
 		)
+		resumen_ui["contacto_directo"] = resumen_ui["contacto_directo"].map(
+			lambda v: f"{int(v):,}".replace(",", ".")
+		)
 
 		min_valor, max_valor = df_resumen["valor_promesa"].min(), df_resumen["valor_promesa"].max()
 		resumen_ui["valor_promesa"] = resumen_ui["valor_promesa"].map(
 			lambda v: f"{barra_azul_monto(v, min_valor, max_valor)} {formato_moneda(v)}"
 		)
 
-		min_contact, max_contact = df_resumen["%_contactabilidad"].min(), df_resumen["%_contactabilidad"].max()
 		min_conv, max_conv = df_resumen["%_Conversion"].min(), df_resumen["%_Conversion"].max()
 
-		resumen_ui["%_contactabilidad"] = resumen_ui["%_contactabilidad"].map(
-			lambda v: f"{icono_pct_relativo(v, min_contact, max_contact)} {v:.2f}%"
-		)
 		resumen_ui["%_Conversion"] = resumen_ui["%_Conversion"].map(
 			lambda v: f"{icono_pct_relativo(v, min_conv, max_conv)} {v:.2f}%"
 		)
@@ -502,14 +501,11 @@ if st.session_state["productividad_seccion"] == "Productividad":
 
 		columnas_vista.extend([
 			"cuentas_gestionadas",
-			"deberia_llevar",
 			"clientes_Gestionados",
+			"deberia_llevar",
 			"contacto_directo",
-			"contacto_indirecto",
-			"no_contacto",
 			"Promesas",
 			"valor_promesa",
-			"%_contactabilidad",
 			"%_Conversion",
 		])
 
@@ -519,12 +515,9 @@ if st.session_state["productividad_seccion"] == "Productividad":
 			"cuentas_gestionadas": "Cuentas\ngestionadas",
 			"clientes_Gestionados": "Clientes\ngestionados",
 			"contacto_directo": "Contacto\ndirecto",
-			"contacto_indirecto": "Contacto\nindirecto",
-			"no_contacto": "No\ncontacto",
 			"Promesas": "Promesas",
 			"deberia_llevar": "Deberia\nllevar",
 			"valor_promesa": "Valor\npromesa",
-			"%_contactabilidad": "%\nContactabilidad",
 			"%_Conversion": "%\nConversion",
 		}
 
@@ -532,10 +525,11 @@ if st.session_state["productividad_seccion"] == "Productividad":
 
 
 	# ── Renderizado Reporte 1: Consolidado del Rango ─────────────────────────
-	matriz_mostrar_consolidado = preparar_matriz_ui(resumen_diario, col_asesor, incluir_fecha=False)
+	resumen_diario_ordenado = resumen_diario.sort_values("%_Conversion", ascending=False).reset_index(drop=True)
+	matriz_mostrar_consolidado = preparar_matriz_ui(resumen_diario_ordenado, col_asesor, incluir_fecha=False)
 	st.markdown(render_matriz_html(matriz_mostrar_consolidado), unsafe_allow_html=True)
 
-	csv_export_consolidado = resumen_diario.to_csv(index=False).encode("utf-8")
+	csv_export_consolidado = resumen_diario_ordenado.to_csv(index=False).encode("utf-8")
 	nombre_archivo_consolidado = (
 		f"resumen_productividad_{fecha_desde}.csv"
 		if fecha_desde == fecha_hasta
@@ -572,8 +566,8 @@ if st.session_state["productividad_seccion"] == "Productividad":
 	if lista_resumenes_diarios:
 		resumen_diario_por_fecha = pd.concat(lista_resumenes_diarios, ignore_index=True)
 		resumen_diario_por_fecha = resumen_diario_por_fecha.sort_values(
-			by=[col_asesor, "_fecha_dt"], ascending=[True, True]
-		).drop(columns=["_fecha_dt"])
+			by=["_fecha_dt", "%_Conversion"], ascending=[True, False]
+		).drop(columns=["_fecha_dt"]).reset_index(drop=True)
 
 		matriz_mostrar_diario = preparar_matriz_ui(resumen_diario_por_fecha, col_asesor, incluir_fecha=True)
 		st.markdown(render_matriz_html(matriz_mostrar_diario), unsafe_allow_html=True)
